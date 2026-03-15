@@ -1,0 +1,23 @@
+# Dependencies
+node_modules/
+vendor/
+
+# Next.js build output & cache
+.next/
+out/
+
+# Build output
+dist/
+build/
+*.o
+*.exe
+
+# Logs & temp files
+*.log
+*.tmp
+.DS_Store
+
+# Large media
+*.mp4
+*.mov
+*.psd
