@@ -15,8 +15,10 @@ import {
   signInWithRedirect,
   createUserWithEmailAndPassword,
   getRedirectResult,
+  onAuthStateChanged,
 } from "firebase/auth";
 import { auth, googleProvider } from "@/lib/firebase";
+import { redirectAfterAuth } from "@/lib/adminAuth";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
 
@@ -48,6 +50,13 @@ export default function SignupPage() {
       });
   }, [router]);
 
+  useEffect(() => {
+    const unsub = onAuthStateChanged(auth, (user) => {
+      if (user) redirectAfterAuth(user, router);
+    });
+    return () => unsub();
+  }, [router]);
+
   // Mouse tracking for glow effect
   const mouseX = useMotionValue(0);
   const mouseY = useMotionValue(0);
@@ -62,8 +71,8 @@ export default function SignupPage() {
     setLoading(true);
     setError(null);
     try {
-      await signInWithPopup(auth, googleProvider);
-      router.push("/dashboard");
+      const { user } = await signInWithPopup(auth, googleProvider);
+      await redirectAfterAuth(user, router);
     } catch (err: unknown) {
       const code = (err as { code?: string })?.code;
       const message = (err as Error)?.message ?? "Sign-in failed";
@@ -87,8 +96,8 @@ export default function SignupPage() {
     setLoading(true);
     setError(null);
     try {
-      await createUserWithEmailAndPassword(auth, formData.email, formData.password);
-      router.push("/dashboard");
+      const { user } = await createUserWithEmailAndPassword(auth, formData.email, formData.password);
+      await redirectAfterAuth(user, router);
     } catch (err: unknown) {
       const code = (err as { code?: string })?.code;
       let message = (err as Error)?.message ?? "Sign-up failed.";

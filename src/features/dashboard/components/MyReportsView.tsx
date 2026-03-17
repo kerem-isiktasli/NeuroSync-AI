@@ -18,6 +18,7 @@ import {
   Clock,
   Stethoscope,
 } from "lucide-react";
+import { getReportModeLabel, getReportModeBadgeClass } from "@/lib/reportTypes";
 import { motion, AnimatePresence } from "framer-motion";
 
 const STATUS_CONFIG: Record<string, { label: string; labelTr: string; color: string }> = {
@@ -236,11 +237,16 @@ function ReportCard({
 
       {/* Content */}
       <div className="flex-1 min-w-0">
-        <div className="flex items-center gap-2 mb-0.5">
+        <div className="flex items-center gap-2 mb-0.5 flex-wrap">
           <h4 className="text-sm font-semibold text-theme-text-primary truncate">{report.title || report.fileName}</h4>
           <span className={`px-1.5 py-0.5 rounded text-[9px] font-bold uppercase tracking-wider ${status.color}`}>
             {language === "tr" ? status.labelTr : status.label}
           </span>
+          {report.reportMode && (
+            <span className={`px-1.5 py-0.5 rounded text-[9px] font-medium border ${getReportModeBadgeClass(report.reportMode)}`}>
+              {getReportModeLabel(report.reportMode, language as "tr" | "en")}
+            </span>
+          )}
         </div>
 
         <div className="flex items-center gap-3 text-[11px] text-theme-text-muted mb-1.5">

@@ -1,0 +1,57 @@
+# Page snapshot
+
+```yaml
+- generic [active]:
+  - generic [ref=e2]:
+    - generic [ref=e4]:
+      - img [ref=e6]
+      - generic [ref=e9]:
+        - heading "Terms of Use & Medical Disclaimer" [level=2] [ref=e10]
+        - paragraph [ref=e11]: Please read and accept to continue using RapiMed.
+    - generic [ref=e12]:
+      - generic [ref=e13]:
+        - heading "Terms of Use" [level=3] [ref=e14]:
+          - img [ref=e15]
+          - text: Terms of Use
+        - list [ref=e18]:
+          - listitem [ref=e19]:
+            - text: RapiMed provides AI-assisted insights for
+            - strong [ref=e20]: informational purposes only
+            - text: .
+          - listitem [ref=e21]:
+            - text: The platform
+            - strong [ref=e22]: does not provide medical diagnoses
+            - text: .
+          - listitem [ref=e23]: You must consult licensed healthcare professionals for any medical decisions.
+      - generic [ref=e24]:
+        - heading "Medical Disclaimer" [level=3] [ref=e25]:
+          - img [ref=e26]
+          - text: Medical Disclaimer
+        - list [ref=e28]:
+          - listitem [ref=e29]:
+            - text: AI-generated analysis may be
+            - strong [ref=e30]: incomplete or incorrect
+            - text: .
+          - listitem [ref=e31]: RapiMed is not responsible for decisions made based on AI output.
+      - generic [ref=e32]:
+        - heading "Data Use" [level=3] [ref=e33]:
+          - img [ref=e34]
+          - text: Data Use
+        - list [ref=e38]:
+          - listitem [ref=e39]: Uploaded reports may be processed by AI models to provide insights.
+          - listitem [ref=e40]: Your data remains private and is not shared with third parties except as needed for processing.
+    - generic [ref=e42]:
+      - generic [ref=e43] [cursor=pointer]:
+        - checkbox "I understand and agree to the Terms and Medical Disclaimer." [ref=e44]
+        - generic [ref=e45]: I understand and agree to the Terms and Medical Disclaimer.
+      - paragraph [ref=e46]: Please scroll to the bottom of the terms before continuing.
+      - button "Agree and Continue" [disabled] [ref=e47]:
+        - img [ref=e48]
+        - text: Agree and Continue
+      - button "Log out instead" [ref=e50]
+  - region "Notifications (F8)":
+    - list
+  - button "Open Next.js Dev Tools" [ref=e56] [cursor=pointer]:
+    - img [ref=e57]
+  - alert [ref=e60]
+```

@@ -37,33 +37,6 @@ export async function setTermsAcceptance(userId: string): Promise<void> {
 }
 
 /**
- * For demo/anonymous users (no Firebase uid), use localStorage.
- */
-export function getDemoTermsAcceptance(): TermsAcceptance | null {
-  if (typeof window === "undefined") return null;
-  try {
-    const accepted = localStorage.getItem(TERMS_STORAGE_KEY);
-    const version = localStorage.getItem(TERMS_VERSION_STORAGE_KEY);
-    if (accepted !== "true" || !version) return null;
-    return {
-      termsAccepted: true,
-      termsAcceptedAt: null,
-      termsVersion: version,
-    };
-  } catch {
-    return null;
-  }
-}
-
-export function setDemoTermsAcceptance(): void {
-  if (typeof window === "undefined") return;
-  try {
-    localStorage.setItem(TERMS_STORAGE_KEY, "true");
-    localStorage.setItem(TERMS_VERSION_STORAGE_KEY, CURRENT_TERMS_VERSION);
-  } catch {}
-}
-
-/**
  * Returns true if the user has accepted the current terms version.
  */
 export function hasAcceptedCurrentTerms(acceptance: TermsAcceptance | null): boolean {

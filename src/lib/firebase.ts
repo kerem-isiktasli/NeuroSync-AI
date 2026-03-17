@@ -12,6 +12,17 @@ const firebaseConfig = {
   appId: process.env.NEXT_PUBLIC_FIREBASE_APP_ID,
 };
 
+if (typeof window !== "undefined" && process.env.NODE_ENV !== "production") {
+  const missing = Object.entries(firebaseConfig)
+    .filter(([, v]) => !v)
+    .map(([k]) => k);
+  if (missing.length > 0) {
+    console.warn("[Firebase] Missing env vars:", missing.join(", "));
+  } else {
+    console.log("[Firebase] Config loaded, project:", firebaseConfig.projectId);
+  }
+}
+
 // Initialize Firebase (Singleton pattern to avoid re-initialization on hot reload)
 const app = !getApps().length ? initializeApp(firebaseConfig) : getApp();
 

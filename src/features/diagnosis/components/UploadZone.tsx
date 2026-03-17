@@ -2,9 +2,11 @@
 
 import React, { useState, useCallback, useEffect } from "react";
 import { motion, AnimatePresence } from "framer-motion";
-import { Upload, Activity, AlertCircle, CheckCircle, Scan, FileText } from "lucide-react";
+import { Upload, Activity, AlertCircle, CheckCircle, Scan, FileText, Lock } from "lucide-react";
 import { useDiagnosis } from "../context/DiagnosisContext";
 import { useSettings } from "../../../context/SettingsContext";
+import { useCredits } from "../../../context/CreditsContext";
+import { usePatient } from "@/context/PatientContext";
 
 interface UploadZoneProps {
   canAnalyze?: boolean;
@@ -14,12 +16,15 @@ interface UploadZoneProps {
 export default function UploadZone({ canAnalyze = true, onUploadSuccess }: UploadZoneProps) {
   const { analyzeFiles, isAnalyzing, error, diagnosisResult, addLog, resetDiagnosis } = useDiagnosis();
   const { t } = useSettings();
+  const { grantCreditsForTesting } = useCredits();
+  const { canUpload, profileComplete, intakeComplete } = usePatient();
   const [isDragging, setIsDragging] = useState(false);
   const [files, setFiles] = useState<File[]>([]);
   const [uploadProgress, setUploadProgress] = useState(0);
   const [localIsAnalyzing, setLocalIsAnalyzing] = useState(false);
 
-  // Secure Cleanup: Remove file from memory when analysis is done/result is shown
+  const uploadAllowed = canAnalyze && canUpload;
+
   useEffect(() => {
     if (diagnosisResult) {
       setFiles([]);
@@ -28,23 +33,19 @@ export default function UploadZone({ canAnalyze = true, onUploadSuccess }: Uploa
 
   const onDragOver = useCallback((e: React.DragEvent) => {
     e.preventDefault();
-    setIsDragging(true);
-  }, []);
+    if (uploadAllowed) setIsDragging(true);
+  }, [uploadAllowed]);
 
   const onDragLeave = useCallback((e: React.DragEvent) => {
     e.preventDefault();
     setIsDragging(false);
   }, []);
 
-  const processFiles = async (uploadedFiles: File[]) => {
-    if (!canAnalyze) return;
-    // Immediate Reset of previous state and results
+  const startAnalysis = async (uploadedFiles: File[]) => {
     resetDiagnosis();
-    
     setFiles(uploadedFiles);
     setUploadProgress(0);
-    
-    // Simulate upload progress
+
     const interval = setInterval(() => {
       setUploadProgress(prev => {
         if (prev >= 100) {
@@ -55,37 +56,46 @@ export default function UploadZone({ canAnalyze = true, onUploadSuccess }: Uploa
       });
     }, 100);
 
-    // Wait for progress to finish before analyzing
     setTimeout(async () => {
       clearInterval(interval);
       setUploadProgress(100);
-      console.log("File Uploaded");
       setLocalIsAnalyzing(true);
       addLog(t('scan_received'));
-      
       await analyzeFiles(uploadedFiles);
-
       setLocalIsAnalyzing(false);
-      setUploadProgress(0); // Reset after analysis starts
+      setUploadProgress(0);
       if (onUploadSuccess) onUploadSuccess();
     }, 1200);
+  };
+
+  const processFiles = async (uploadedFiles: File[]) => {
+    if (!uploadAllowed) return;
+    startAnalysis(uploadedFiles);
   };
 
   const onDrop = useCallback((e: React.DragEvent) => {
     e.preventDefault();
     setIsDragging(false);
-    if (!canAnalyze) return;
+    if (!uploadAllowed) return;
     if (e.dataTransfer.files && e.dataTransfer.files.length > 0) {
       processFiles(Array.from(e.dataTransfer.files));
     }
-  }, [canAnalyze]);
+  }, [uploadAllowed]);
 
   const onFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
-    if (!canAnalyze) return;
+    if (!uploadAllowed) return;
     if (e.target.files && e.target.files.length > 0) {
       processFiles(Array.from(e.target.files));
     }
   };
+
+  const gateMessage = !profileComplete
+    ? "Complete your medical profile first"
+    : !intakeComplete
+    ? "Answer all report questions first"
+    : !canAnalyze
+    ? t('insufficient_credits')
+    : null;
 
   return (
     <div className="w-full flex flex-col gap-4">
@@ -113,18 +123,15 @@ export default function UploadZone({ canAnalyze = true, onUploadSuccess }: Uploa
           ${isDragging ? "ring-2 ring-theme-accent ring-offset-2 ring-offset-theme-bg scale-[1.01]" : ""}
         `}
       >
-
         <div 
-          className={`relative z-10 flex flex-col items-center justify-center text-center min-h-[220px] md:min-h-[280px] rounded-2xl md:rounded-3xl bg-theme-surface-elevated border border-theme-border transition-colors duration-200 p-6 md:p-10 ${canAnalyze ? "hover:border-theme-accent/40" : "opacity-75 pointer-events-none"}`}
-          onDragOver={canAnalyze ? onDragOver : undefined}
-          onDragLeave={canAnalyze ? onDragLeave : undefined}
-          onDrop={canAnalyze ? onDrop : undefined}
+          className={`relative z-10 flex flex-col items-center justify-center text-center min-h-[220px] md:min-h-[280px] rounded-2xl md:rounded-3xl bg-theme-surface-elevated border border-theme-border transition-colors duration-200 p-6 md:p-10 ${uploadAllowed ? "hover:border-theme-accent/40" : "opacity-75"}`}
+          onDragOver={uploadAllowed ? onDragOver : undefined}
+          onDragLeave={uploadAllowed ? onDragLeave : undefined}
+          onDrop={uploadAllowed ? onDrop : undefined}
         >
-          {/* Background Grid */}
           <div className="absolute inset-0 bg-[url('https://grainy-gradients.vercel.app/noise.svg')] opacity-5 mix-blend-overlay"></div>
           <div className="absolute inset-0 bg-[linear-gradient(rgba(0,0,0,0.03)_1px,transparent_1px),linear-gradient(90deg,rgba(0,0,0,0.03)_1px,transparent_1px)] dark:bg-[linear-gradient(rgba(255,255,255,0.03)_1px,transparent_1px),linear-gradient(90deg,rgba(255,255,255,0.03)_1px,transparent_1px)] bg-[size:24px_24px] [mask-image:radial-gradient(ellipse_at_center,black_40%,transparent_80%)]"></div>
 
-          {/* Upload Progress Bar */}
           <AnimatePresence>
             {uploadProgress > 0 && (
               <motion.div
@@ -165,26 +172,50 @@ export default function UploadZone({ canAnalyze = true, onUploadSuccess }: Uploa
               >
                 <div className="w-24 h-24 rounded-2xl bg-theme-surface flex items-center justify-center mb-8 border border-theme-border group-hover:border-theme-accent/50 transition-all duration-500 relative overflow-hidden group/icon">
                   <div className="absolute inset-0 bg-gradient-to-tr from-theme-accent/20 to-transparent opacity-0 group-hover/icon:opacity-100 transition-opacity"></div>
-                  <Upload className="w-10 h-10 text-theme-text-muted group-hover/icon:text-theme-accent transition-colors" />
+                  {uploadAllowed ? (
+                    <Upload className="w-10 h-10 text-theme-text-muted group-hover/icon:text-theme-accent transition-colors" />
+                  ) : (
+                    <Lock className="w-10 h-10 text-theme-text-muted" />
+                  )}
                 </div>
                 
                 <h4 className="text-3xl font-bold text-theme-text-primary mb-3 tracking-tight">
-                  {t('upload_medical_scan')}
+                  {uploadAllowed ? t('upload_medical_scan') : "Upload Locked"}
                 </h4>
                 <div className="flex flex-col gap-y-4 items-center">
-                  <p className="text-theme-text-secondary mb-4 max-w-sm leading-relaxed text-sm">
-                    {t('drag_drop_dicom')} <br />
-                    <span className="text-theme-text-muted">{t('supports_formats')}</span>
-                  </p>
+                  {uploadAllowed ? (
+                    <p className="text-theme-text-secondary mb-4 max-w-sm leading-relaxed text-sm">
+                      {t('drag_drop_dicom')} <br />
+                      <span className="text-theme-text-muted">{t('supports_formats')}</span>
+                    </p>
+                  ) : (
+                    <p className="text-amber-400 mb-4 max-w-sm leading-relaxed text-sm font-medium">
+                      {gateMessage}
+                    </p>
+                  )}
                 </div>
 
-                {!canAnalyze && (
-                  <p className="text-theme-warning text-sm font-medium mb-4">{t('insufficient_credits')}</p>
+                {!canAnalyze && profileComplete && intakeComplete && (
+                  <div className="flex flex-col items-center gap-2 mb-4 pointer-events-auto">
+                    <p className="text-theme-warning text-sm font-medium">{t('insufficient_credits')}</p>
+                    {grantCreditsForTesting && (
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          grantCreditsForTesting(100);
+                        }}
+                        className="text-xs px-3 py-1.5 rounded-lg bg-emerald-500/20 text-emerald-400 border border-emerald-500/30 hover:bg-emerald-500/30 transition-colors cursor-pointer"
+                      >
+                        Grant 100 test credits (dev)
+                      </button>
+                    )}
+                  </div>
                 )}
-                <label className={`relative overflow-hidden font-bold px-10 py-4 rounded-xl transition-all shadow-lg group/btn ${canAnalyze ? "cursor-pointer bg-theme-accent hover:bg-theme-accent/90 text-theme-accent-foreground hover:scale-105 active:scale-95" : "cursor-not-allowed bg-theme-surface-elevated text-theme-text-muted border border-theme-border"}`}>
+                <label className={`relative overflow-hidden font-bold px-10 py-4 rounded-xl transition-all shadow-lg group/btn ${uploadAllowed ? "cursor-pointer bg-theme-accent hover:bg-theme-accent/90 text-theme-accent-foreground hover:scale-105 active:scale-95" : "cursor-not-allowed bg-theme-surface-elevated text-theme-text-muted border border-theme-border pointer-events-none"}`}>
                   <span className="relative z-10 flex items-center gap-2 text-lg">
-                    <Scan className="w-5 h-5" />
-                    {t('select_file')}
+                    {uploadAllowed ? <Scan className="w-5 h-5" /> : <Lock className="w-5 h-5" />}
+                    {uploadAllowed ? t('select_file') : "Locked"}
                   </span>
                   <input 
                     type="file" 
@@ -192,7 +223,7 @@ export default function UploadZone({ canAnalyze = true, onUploadSuccess }: Uploa
                     onChange={onFileSelect}
                     multiple
                     accept=".dcm,.png,.jpg,.jpeg,.pdf"
-                    disabled={!canAnalyze}
+                    disabled={!uploadAllowed}
                   />
                 </label>
               </motion.div>
@@ -207,7 +238,6 @@ export default function UploadZone({ canAnalyze = true, onUploadSuccess }: Uploa
                 className="w-full flex flex-col items-center relative z-20"
               >
                 <div className="relative w-40 h-40 mb-8">
-                   {/* Complex Spinning Rings */}
                    {[...Array(2)].map((_, i) => (
                      <motion.div 
                        key={i}
@@ -223,14 +253,11 @@ export default function UploadZone({ canAnalyze = true, onUploadSuccess }: Uploa
                      </div>
                    </div>
                 </div>
-                
                 <h4 className="text-2xl font-bold text-theme-text-primary mb-2">{t('analyzing_anatomy')}</h4>
                 <div className="flex items-center gap-2 text-sm text-theme-text-muted mb-8 font-mono bg-theme-surface px-3 py-1 rounded-lg border border-theme-border">
                   <FileText className="w-3 h-3" />
-                  {files.length === 1 ? files[0]?.name : `${files.length} dosya`}
+                  {files.length === 1 ? files[0]?.name : `${files.length} files`}
                 </div>
-                
-                {/* Advanced Progress Bar */}
                 <div className="w-full max-w-sm h-1.5 bg-theme-surface rounded-full overflow-hidden relative mb-4">
                   <motion.div 
                     className="absolute inset-0 bg-theme-accent w-1/2 rounded-full"
@@ -260,7 +287,6 @@ export default function UploadZone({ canAnalyze = true, onUploadSuccess }: Uploa
                 <p className="text-theme-text-secondary mb-8 text-center max-w-sm">
                   {t('scan_success_message')}
                 </p>
-                
                 <button 
                   onClick={() => document.getElementById("file-input-retry")?.click()}
                   className="px-6 py-3 rounded-xl bg-theme-surface-elevated hover:bg-theme-surface border border-theme-border text-sm text-theme-text-secondary font-medium flex items-center gap-2 transition-all"
@@ -293,15 +319,22 @@ export default function UploadZone({ canAnalyze = true, onUploadSuccess }: Uploa
                 <p className="text-theme-text-secondary mb-8 text-center max-w-xs">
                   {error}
                 </p>
-                
                 <button 
                   onClick={() => {
                     if (files.length > 0) processFiles(files);
-                    else document.getElementById("file-input-retry")?.click();
+                    else document.getElementById("file-input-retry-err")?.click();
                   }}
                   className="bg-theme-surface-elevated hover:bg-theme-surface text-theme-text-primary px-8 py-3 rounded-xl transition-colors font-medium border border-theme-border"
                 >
                   {t('retry_analysis')}
+                  <input
+                    id="file-input-retry-err"
+                    type="file"
+                    className="hidden"
+                    onChange={onFileSelect}
+                    multiple
+                    accept=".dcm,.png,.jpg,.jpeg,.pdf"
+                  />
                 </button>
               </motion.div>
             )}

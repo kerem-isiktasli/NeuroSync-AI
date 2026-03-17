@@ -1,10 +1,15 @@
 "use client";
 
 import React, { createContext, useContext, useState, useCallback, type ReactNode } from "react";
+import { validateDicomBatch } from "@/lib/dicom";
+import { classifyUploadBatch, type UploadBatchType } from "@/lib/uploadClassifier";
+import { computeRoutingDecision, inspectFiles } from "@/lib/intakeRouter";
+import { usePatient } from "@/context/PatientContext";
+import type { RoutingDecision } from "@/types/intake";
 
-function formatAnalysisError(raw: string, _err: unknown): string {
+function formatAnalysisError(raw: string, err: unknown): string {
   if (raw.includes("404") && (raw.toLowerCase().includes("model") || raw.toLowerCase().includes("not found"))) {
-    return "The AI model is currently unavailable (404). Try setting VERTEX_MODEL=gemini-2.0-flash-001 in your environment, or contact support.";
+    return "The AI model is currently unavailable (404). Try setting VERTEX_MODEL=gemini-2.5-flash in your environment, or contact support.";
   }
   if (raw.toLowerCase().includes("permission") || raw.includes("403")) {
     return "Access to the AI service was denied. Check credentials and IAM permissions.";
@@ -12,10 +17,23 @@ function formatAnalysisError(raw: string, _err: unknown): string {
   if (raw.toLowerCase().includes("timeout")) {
     return "The analysis timed out. Please try again.";
   }
+  if (raw.toLowerCase().includes("413") || raw.toLowerCase().includes("payload too large") || raw.toLowerCase().includes("body exceeded")) {
+    return "Study size too large. Try fewer files or a smaller study.";
+  }
+  if (err instanceof Error && (err.name === "AbortError" || err.message?.toLowerCase().includes("aborted"))) {
+    return "Upload was interrupted. Please try again.";
+  }
+  if (raw.toLowerCase().includes("failed to fetch") || raw.toLowerCase().includes("network error")) {
+    return "Network error. Check your connection and try again.";
+  }
   return raw;
 }
 import { DiagnosisResult, DiagnosisState } from "@/types/diagnosis";
-import { runFullDiagnosis, runFullDiagnosisBatch } from "@/services/core-bridge";
+import {
+  runFullDiagnosis,
+  runFullDiagnosisBatch,
+  runFullDiagnosisDicomBatch,
+} from "@/services/core-bridge";
 import { useReports } from "@/context/ReportsContext";
 
 interface DiagnosisContextType extends DiagnosisState {
@@ -43,6 +61,7 @@ export function DiagnosisProvider({ children }: { children: ReactNode }) {
   const [currentReportId, setCurrentReportId] = useState<string | null>(null);
 
   const { createNewReport, markProcessing, markComplete, markFailed } = useReports();
+  const { profile, currentIntake, saveCurrentIntake } = usePatient();
 
   const addLog = useCallback((message: string) => {
     setLogs((prev) => [message, ...prev]);
@@ -88,23 +107,68 @@ export function DiagnosisProvider({ children }: { children: ReactNode }) {
     setReportText(null);
     setDownloadUrl(null);
 
+    // ── Intake-aware routing ──
+    const fileInspection = inspectFiles(files);
+    const routingDecision: RoutingDecision = computeRoutingDecision({
+      profile,
+      intake: currentIntake,
+      fileInspection,
+    });
+
+    // Legacy classifier still used for DICOM detection (battle-tested)
+    const classified: UploadBatchType = classifyUploadBatch(files);
+
+    // Log the routing decision
+    if (process.env.NODE_ENV !== "production") {
+      console.log("[Upload] Intake-aware routing:", {
+        pipeline: routingDecision.pipeline,
+        domain: routingDecision.domain,
+        confidence: routingDecision.confidenceLevel,
+        bodyRegionSource: routingDecision.bodyRegionSource,
+        reportStyle: routingDecision.reportStyle,
+        safetyLevel: routingDecision.safetyLevel,
+        reasons: routingDecision.reasons,
+        conflicts: routingDecision.conflicts,
+        legacyClassified: classified,
+      });
+    }
+
+    // Use routing decision to determine the actual pipeline
+    const useDicom = classified === "dicom-study" || routingDecision.pipeline === "dicom-study";
+
     const primaryName = files[0]?.name ?? "Image";
     const primaryType = files[0]?.type || "image/jpeg";
     const reportId = await createNewReport(primaryName, primaryType);
     setCurrentReportId(reportId);
-    if (reportId) await markProcessing(reportId);
+    if (reportId) {
+      await markProcessing(reportId);
+      await saveCurrentIntake(reportId);
+    }
+
+    addLog(
+      routingDecision.confidenceLevel === "high"
+        ? `Routing: ${routingDecision.pipeline} (${routingDecision.domain}) — high confidence`
+        : `Routing: ${routingDecision.pipeline} (${routingDecision.domain}) — ${routingDecision.confidenceLevel} confidence`
+    );
+
+    const callbacks = {
+      onLog: (msg: string) => addLog(msg),
+      onResult: (result: DiagnosisResult) => {
+        setDiagnosisResult(result);
+        setSelectedOrgan(result.affected_organ);
+        if (reportId) markComplete(reportId, result);
+      },
+      onReport: (text: string) => setReportText(text),
+      onDownloadUrl: (url: string) => setDownloadUrl(url),
+    };
 
     try {
-      await runFullDiagnosisBatch(files, {
-        onLog: (msg) => addLog(msg),
-        onResult: (result) => {
-          setDiagnosisResult(result);
-          setSelectedOrgan(result.affected_organ);
-          if (reportId) markComplete(reportId, result);
-        },
-        onReport: (text) => setReportText(text),
-        onDownloadUrl: (url) => setDownloadUrl(url),
-      });
+      if (useDicom) {
+        await validateDicomBatch(files);
+        await runFullDiagnosisDicomBatch(files, callbacks);
+      } else {
+        await runFullDiagnosisBatch(files, callbacks, routingDecision);
+      }
     } catch (err) {
       const raw = err instanceof Error ? err.message : "An unknown error occurred during analysis.";
       const message = formatAnalysisError(raw, err);
@@ -114,7 +178,7 @@ export function DiagnosisProvider({ children }: { children: ReactNode }) {
     } finally {
       setIsAnalyzing(false);
     }
-  }, [addLog, createNewReport, markProcessing, markComplete, markFailed]);
+  }, [addLog, createNewReport, markProcessing, markComplete, markFailed, profile, currentIntake, saveCurrentIntake]);
 
   const resetDiagnosis = useCallback(() => {
     setDiagnosisResult(null);

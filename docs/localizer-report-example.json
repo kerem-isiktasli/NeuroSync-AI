@@ -1,0 +1,16 @@
+{
+  "reportType": "LOCALIZER_DETECTED",
+  "interpretation": "These images appear to be MRI/CT localizer (scout) images.",
+  "explanation": "Localizer images are positioning scans used to align the study and do not contain sufficient diagnostic detail for medical interpretation.",
+  "recommendation": [
+    "Upload diagnostic MRI/CT slices instead.",
+    "Recommended sequences include sagittal, axial, or coronal views.",
+    "If possible upload the full DICOM study."
+  ],
+  "detectedIndicators": [
+    "OCR keyword: localizer/scout/survey/topogram/locator",
+    "Low slice count",
+    "Non-diagnostic anatomy structure"
+  ],
+  "confidence": 0.9
+}

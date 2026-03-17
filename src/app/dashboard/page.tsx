@@ -1,6 +1,7 @@
 "use client";
 
 import React, { useEffect, useState, useCallback } from "react";
+import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { onAuthStateChanged, signOut } from "firebase/auth";
 import { auth } from "@/lib/firebase";
@@ -9,6 +10,9 @@ import AIReport from "@/features/diagnosis/components/AIReport";
 import { useSettings } from "@/context/SettingsContext";
 import { useReports } from "@/context/ReportsContext";
 import { useDiagnosis } from "@/features/diagnosis/context/DiagnosisContext";
+import { usePatient } from "@/context/PatientContext";
+import ProfileForm from "@/features/intake/ProfileForm";
+import ReportIntakeForm from "@/features/intake/ReportIntakeForm";
 import SettingsView from "@/features/dashboard/components/SettingsView";
 import SubscriptionView from "@/features/dashboard/components/SubscriptionView";
 import ChatView from "@/features/dashboard/components/ChatView";
@@ -20,13 +24,12 @@ import { useCredits } from "@/context/CreditsContext";
 import {
   getTermsAcceptance,
   setTermsAcceptance,
-  getDemoTermsAcceptance,
-  setDemoTermsAcceptance,
   hasAcceptedCurrentTerms,
 } from "@/lib/termsFirestore";
 import {
   LogOut, MessageSquarePlus, CreditCard,
-  Settings, LayoutDashboard, Activity, FileText, LifeBuoy
+  Settings, LayoutDashboard, Activity, FileText, LifeBuoy, Shield,
+  CheckCircle, ClipboardList, User, Upload
 } from "lucide-react";
 import { motion, AnimatePresence, Variants } from "framer-motion";
 
@@ -39,6 +42,8 @@ export default function DashboardPage() {
   const { credits, canAnalyze, deductForAnalysis } = useCredits();
   const { openReport, activeReportId, setActiveReportId } = useReports();
   const { diagnosisResult, loadSavedResult, currentReportId } = useDiagnosis();
+  const { profileComplete, intakeComplete, canUpload, resetIntake } = usePatient();
+  const { language } = useSettings();
   const [loading, setLoading] = useState(true);
   const [userEmail, setUserEmail] = useState<string | null>(null);
   const [userId, setUserId] = useState<string | null>(null);
@@ -48,6 +53,7 @@ export default function DashboardPage() {
 
   const [activeView, setActiveView] = useState<View>('dashboard');
   const [isSidebarExpanded, setIsSidebarExpanded] = useState(false);
+  const [isAdmin, setIsAdmin] = useState(false);
 
   const handleBuyCredits = () => {
     setActiveView('subscription');
@@ -58,11 +64,7 @@ export default function DashboardPage() {
     setTermsAccepting(true);
     setTermsAccepted(true);
     try {
-      if (userId) {
-        await setTermsAcceptance(userId);
-      } else {
-        setDemoTermsAcceptance();
-      }
+      if (userId) await setTermsAcceptance(userId);
     } catch (e) {
       console.error("Failed to save terms acceptance", e);
     } finally {
@@ -77,32 +79,20 @@ export default function DashboardPage() {
         setUserId(user.uid);
         setLoading(false);
       } else {
-        const isDemo = localStorage.getItem("neurosync_demo_mode");
-        if (isDemo) {
-          setUserEmail("demo@neurosync.ai");
-          setUserId(null);
-          setLoading(false);
-        } else {
-          router.push("/login");
-        }
+        router.push("/login");
       }
     });
     return () => unsubscribe();
   }, [router]);
 
   useEffect(() => {
-    if (loading || userEmail === null) return;
+    if (loading || userEmail === null || !userId) return;
     let cancelled = false;
     setTermsCheckLoading(true);
     (async () => {
       try {
-        if (userId) {
-          const result = await getTermsAcceptance(userId);
-          if (!cancelled) setTermsAccepted(hasAcceptedCurrentTerms(result));
-        } else {
-          const result = getDemoTermsAcceptance();
-          if (!cancelled) setTermsAccepted(hasAcceptedCurrentTerms(result));
-        }
+        const result = await getTermsAcceptance(userId);
+        if (!cancelled) setTermsAccepted(hasAcceptedCurrentTerms(result));
       } catch {
         if (!cancelled) setTermsAccepted(false);
       } finally {
@@ -111,6 +101,27 @@ export default function DashboardPage() {
     })();
     return () => { cancelled = true; };
   }, [loading, userEmail, userId]);
+
+  useEffect(() => {
+    if (loading || !userId) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const user = auth.currentUser;
+        if (!user || cancelled) return;
+        const token = await user.getIdToken(true);
+        if (!token || cancelled) return;
+        const res = await fetch("/api/admin/verify", {
+          headers: { Authorization: `Bearer ${token}` },
+        });
+        const data = await res.json();
+        if (!cancelled) setIsAdmin(data.admin === true);
+      } catch {
+        if (!cancelled) setIsAdmin(false);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [loading, userId]);
 
   // When a new analysis completes on dashboard, sync the active report
   useEffect(() => {
@@ -138,7 +149,6 @@ export default function DashboardPage() {
     } catch (error) {
       console.error("Logout error", error);
     }
-    localStorage.removeItem("neurosync_demo_mode");
     router.push("/login");
   };
 
@@ -258,6 +268,15 @@ export default function DashboardPage() {
                 active={activeView === 'support'} 
                 onClick={() => setActiveView('support')}
               />
+              {isAdmin && (
+                <Link
+                  href="/admin"
+                  className={`w-full flex items-center gap-3 py-2.5 rounded-xl transition-all duration-200 group text-theme-text-muted hover:bg-theme-surface hover:text-theme-text-primary ${isSidebarExpanded ? 'px-3' : 'px-0 justify-center'}`}
+                >
+                  <Shield size={20} className="shrink-0 text-theme-text-muted group-hover:text-theme-text-primary" />
+                  {isSidebarExpanded && <span className="whitespace-nowrap text-sm">Admin</span>}
+                </Link>
+              )}
             </nav>
           </div>
 
@@ -322,37 +341,143 @@ export default function DashboardPage() {
                    <p className="text-body mt-1 max-w-xl">Upload a scan for AI-assisted interpretation. Your data is encrypted and private.</p>
                  </motion.header>
 
-                 <div className="flex-1 grid grid-cols-1 lg:grid-cols-12 gap-4 md:gap-6 min-h-0 overflow-y-auto pb-20">
-                 {/* Left Column: Upload */}
+                 {/* Step indicator */}
+                 <motion.div variants={itemVariants} className="mb-4 shrink-0">
+                   <div className="flex items-center gap-3 text-sm">
+                     <div className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg border ${profileComplete ? "bg-emerald-500/10 border-emerald-500/30 text-emerald-400" : "bg-amber-500/10 border-amber-500/30 text-amber-400"}`}>
+                       {profileComplete ? <CheckCircle size={14} /> : <User size={14} />}
+                       <span className="font-medium">1. Profile</span>
+                     </div>
+                     <div className="w-6 h-px bg-theme-border" />
+                     <div className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg border ${intakeComplete ? "bg-emerald-500/10 border-emerald-500/30 text-emerald-400" : profileComplete ? "bg-amber-500/10 border-amber-500/30 text-amber-400" : "bg-theme-surface border-theme-border text-theme-text-muted"}`}>
+                       {intakeComplete ? <CheckCircle size={14} /> : <ClipboardList size={14} />}
+                       <span className="font-medium">2. Questions</span>
+                     </div>
+                     <div className="w-6 h-px bg-theme-border" />
+                     <div className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg border ${canUpload ? "bg-emerald-500/10 border-emerald-500/30 text-emerald-400" : "bg-theme-surface border-theme-border text-theme-text-muted"}`}>
+                       <Upload size={14} />
+                       <span className="font-medium">3. Upload</span>
+                     </div>
+                     <div className="w-6 h-px bg-theme-border" />
+                     <div className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg border ${diagnosisResult ? "bg-emerald-500/10 border-emerald-500/30 text-emerald-400" : "bg-theme-surface border-theme-border text-theme-text-muted"}`}>
+                       <Activity size={14} />
+                       <span className="font-medium">4. Results</span>
+                     </div>
+                   </div>
+                 </motion.div>
+
+                 <div className={`flex-1 flex min-h-0 overflow-y-auto pb-24 ${diagnosisResult ? "flex-row gap-4 md:gap-6" : "flex-col"}`}>
+                 {/* Workflow Column — stage-owned layout: Questions own page when active */}
                  <motion.section 
                    variants={itemVariants}
-                   className="col-span-1 lg:col-span-5 flex flex-col min-h-[420px]"
+                   className={`flex flex-col shrink-0 ${
+                     diagnosisResult ? "w-full lg:w-[42%] lg:max-w-xl gap-4 md:gap-6" 
+                     : intakeComplete ? "w-full max-w-2xl mx-auto gap-4" 
+                     : "w-full max-w-5xl mx-auto gap-8"
+                   }`}
                  >
-                   <div className="flex-1 luxo-card flex flex-col justify-center min-h-[380px]">
-                      <div className="w-full p-5 md:p-6">
-                        <UploadZone canAnalyze={canAnalyze} onUploadSuccess={handleUploadSuccess} />
-                      </div>
+                   {/* Gate 1: Profile completion */}
+                   {!profileComplete && (
+                     <div className="luxo-card p-5 md:p-6">
+                       <div className="flex items-center gap-2 mb-3">
+                         <User size={18} className="text-amber-400" />
+                         <h3 className="text-lg font-bold text-theme-text-primary">
+                           {language === "tr" ? "Profil Tamamlama" : "Complete Your Profile"}
+                         </h3>
+                       </div>
+                       <p className="text-sm text-theme-text-secondary mb-4">
+                         {language === "tr"
+                           ? "Yükleme yapabilmek için temel bilgilerinizi doldurun."
+                           : "Fill in your basic information before uploading."}
+                       </p>
+                       <ProfileForm language={(language as "tr" | "en") ?? "en"} compact />
+                     </div>
+                   )}
+
+                   {/* Gate 2: Report Questions — page-native when active, collapsed when complete */}
+                   {profileComplete && (
+                     <>
+                       {!intakeComplete ? (
+                         /* Questions active: form is main page content, no bounding card */
+                         <div className="flex flex-col">
+                           <div className="mb-6">
+                             <h2 className="text-xl font-bold text-theme-text-primary flex items-center gap-2">
+                               <ClipboardList size={20} className="text-amber-400" />
+                               {language === "tr" ? "Rapor Soruları" : "Report Questions"}
+                             </h2>
+                             <p className="text-sm text-theme-text-secondary mt-1">
+                               {language === "tr"
+                                 ? "Tüm soruları yanıtlayın, ardından yükleme açılacak."
+                                 : "Answer all questions, then upload will unlock."}
+                             </p>
+                           </div>
+                           <ReportIntakeForm language={(language as "tr" | "en") ?? "en"} compact={false} />
+                           <div className="mt-8 py-3 px-4 rounded-lg bg-theme-surface/60 border border-theme-border/50 flex items-center gap-2 text-theme-text-muted text-sm">
+                             <Upload size={14} className="opacity-60 shrink-0" />
+                             {language === "tr" ? "Yükleme, sorular tamamlandığında açılır." : "Upload unlocks when questions are complete."}
+                           </div>
+                         </div>
+                       ) : (
+                         /* Questions complete: compact summary + upload primary */
+                         <>
+                           <div className="luxo-card p-4 flex items-center justify-between">
+                             <div className="flex items-center gap-2">
+                               <CheckCircle size={18} className="text-emerald-400" />
+                               <span className="text-sm font-medium text-theme-text-primary">
+                                 {language === "tr" ? "Sorular tamamlandı" : "Questions complete"}
+                               </span>
+                             </div>
+                             <button
+                               type="button"
+                               onClick={resetIntake}
+                               className="text-xs text-theme-accent hover:underline"
+                             >
+                               {language === "tr" ? "Düzenle" : "Edit"}
+                             </button>
+                           </div>
+                           <div className="luxo-card flex flex-col justify-center min-h-[320px]">
+                             <div className="w-full p-5 md:p-6">
+                               <UploadZone canAnalyze={canAnalyze} onUploadSuccess={handleUploadSuccess} />
+                             </div>
+                           </div>
+                         </>
+                       )}
+                     </>
+                   )}
+
+                   {/* Privacy notice */}
+                   <div className="flex items-start gap-2 px-4 py-3 rounded-lg bg-theme-surface/50 border border-theme-border/50">
+                     <Shield size={14} className="text-theme-accent mt-0.5 flex-shrink-0" />
+                     <p className="text-xs text-theme-text-muted leading-relaxed">
+                       {language === "tr"
+                         ? "Kayıtlı profiliniz ve rapor cevaplarınız yalnızca analiz kalitesini artırmak, doğru işleme yöntemini seçmek ve RapiMed içinde daha iyi açıklamalar sunmak için kullanılır. Bu bilgiler gelecek analizleriniz için saklanır ve profil/ayarlarınızdan düzenlenebilir."
+                         : "Your saved profile and report answers are used only to improve analysis quality, choose the correct processing method, and provide better explanations inside RapiMed. This information is stored for your future analyses and can be edited from your profile/settings."}
+                     </p>
                    </div>
                  </motion.section>
 
-                 {/* Right Column: Report */}
-                <section className="col-span-1 lg:col-span-7 flex flex-col min-h-[420px]">
-                  <motion.div 
-                     variants={itemVariants}
-                     className="flex-1 luxo-card flex flex-col overflow-hidden min-h-[380px]"
-                  >
-                     <div className="shrink-0 pt-5 px-5 md:pt-6 md:px-6 pb-2 border-b border-theme-border">
-                       <h2 className="text-h2 flex items-center gap-2">
-                          <Activity size={18} className="text-theme-accent" />
-                          Report interpretation
-                        </h2>
-                       <p className="text-caption mt-1">AI-assisted analysis. Not a diagnosis — always consult a physician.</p>
-                      </div>
-                      <div className="flex-1 min-h-0 overflow-hidden flex flex-col pt-4 pb-6 px-5 md:px-6">
-                        <AIReport />
-                      </div>
-                   </motion.div>
-                 </section>
+                 {/* Right Column: Report — only when results exist */}
+                 {diagnosisResult && (
+                   <section className="flex-1 flex flex-col min-w-0 min-h-[420px]">
+                     <motion.div
+                       variants={itemVariants}
+                       initial={{ opacity: 0, x: 12 }}
+                       animate={{ opacity: 1, x: 0 }}
+                       className="flex-1 luxo-card flex flex-col overflow-hidden min-h-[380px]"
+                     >
+                       <div className="shrink-0 pt-5 px-5 md:pt-6 md:px-6 pb-2 border-b border-theme-border">
+                         <h2 className="text-h2 flex items-center gap-2">
+                           <Activity size={18} className="text-theme-accent" />
+                           Report interpretation
+                         </h2>
+                         <p className="text-caption mt-1">AI-assisted analysis. Not a diagnosis — always consult a physician.</p>
+                       </div>
+                       <div className="flex-1 min-h-0 overflow-hidden flex flex-col pt-4 pb-6 px-5 md:px-6">
+                         <AIReport />
+                       </div>
+                     </motion.div>
+                   </section>
+                 )}
                  </div>
                </motion.div>
              ) : (

@@ -1,3 +1,14 @@
+/**
+ * Vertex Image Service — Multimodal image reasoning via Vertex AI Gemini.
+ *
+ * ARCHITECTURE: This is NOT the Google Cloud Healthcare API.
+ * - Cloud Healthcare API: DICOMweb study ingestion, metadata (future)
+ * - Document AI: dedicated OCR for report screenshots (future)
+ * - This module: Vertex Gemini for classification, extraction, provisional OCR
+ * - Anthropic: synthesis and chat (see synthesisPrompts, reportChatPrompts)
+ *
+ * Do not imply Healthcare API is the diagnostic engine.
+ */
 import { GoogleAuth } from 'google-auth-library';
 import path from 'path';
 import {
@@ -22,13 +33,53 @@ import {
   type IntakeImagePlane,
 } from './ai/intakePrompts';
 import { VERTEX_CONFIG, getVertexEndpoint } from './vertexConfig';
+import {
+  getStructuredReconciliationPrompt,
+  parseStructuredReconciliation,
+  type PerImageFindingForReconciliation,
+  type StructuredReconciliationResult,
+} from './ai/structuredReconciliation';
+import type { StudyMetadata } from './ai/studyAggregator';
+import { getReportOcrPrompt, type ReportOcrResult } from './ai/reportOcrPrompts';
+import {
+  buildReportFusionPrompt,
+  parseFusionResponse,
+  type ReportFusionResult,
+  type ReportFusionInput,
+} from './ai/reportFusion';
+import {
+  buildStudyReportPrompt,
+  type StudyReportVertexInput,
+} from './ai/studyReportPrompts';
+import {
+  buildStudyReportPromptUniversal,
+  type StudyReportVertexInput as StudyReportVertexInputUniversal,
+} from './ai/studyReportPromptsUniversal';
+import {
+  getDicomSliceAnalysisPrompt,
+  type DicomSliceAnalysisContext,
+  type DicomSliceAnalysisResult,
+} from './ai/dicomSlicePrompts';
+import { getDomainAnalyzerPrompt } from './ai/domainAnalyzerPrompts';
+import type { MedicalDomain } from './medical/domainRouter';
 
 const SCOPES = ['https://www.googleapis.com/auth/cloud-platform'];
-const KEY_FILE_PATH = path.join(process.cwd(), 'credentials', 'google-key.json');
+const KEY_FILE_PATH = (() => {
+  const env = process.env.GOOGLE_APPLICATION_CREDENTIALS;
+  if (env) return path.isAbsolute(env) ? env : path.join(process.cwd(), env);
+  // Fallbacks: service-account.json then credentials/google-key.json
+  return path.join(process.cwd(), 'service-account.json');
+})();
 
 const INTAKE_TIMEOUT_MS = 10_000;
 const CLASSIFY_TIMEOUT_MS = 20_000;
 const EXTRACTION_TIMEOUT_MS = 50_000;
+const DOMAIN_ANALYZER_TIMEOUT_MS = 45_000;
+const RECONCILIATION_TIMEOUT_MS = 25_000;
+const REPORT_OCR_TIMEOUT_MS = 30_000;
+const LOCALIZER_OCR_TIMEOUT_MS = 12_000;
+const FUSION_TIMEOUT_MS = 25_000;
+const STUDY_REPORT_TIMEOUT_MS = 45_000;
 
 export interface VertexAnalysisResult {
   classification: ClassificationResult;
@@ -47,19 +98,62 @@ function removeTrailingCommas(s: string): string {
   return cur;
 }
 
+/**
+ * Robust JSON extraction from model output. Tolerates:
+ * - Markdown code fences (```json ... ```)
+ * - Leading/trailing text
+ * - Trailing commas
+ * - Slightly malformed strings (escape fixes)
+ */
 function extractJSONFromText(text: string): unknown | null {
   if (!text || typeof text !== "string") return null;
 
-  let cleaned = text.trim()
-    .replace(/^```(?:json)?\s*\n?/i, "")
-    .replace(/\n?```\s*$/i, "")
-    .trim();
+  const strategies: ((t: string) => unknown | null)[] = [
+    // Strategy 1: direct brace extraction
+    (t) => tryParseWithBraces(t),
+    // Strategy 2: strip markdown fences
+    (t) => tryParseWithBraces(t.replace(/^```(?:json)?\s*\n?/i, "").replace(/\n?```\s*$/i, "").trim()),
+    // Strategy 3: regex-match deepest {...}
+    (t) => {
+      const m = t.match(/\{[\s\S]*\}/);
+      return m ? tryParse(m[0]) : null;
+    },
+    // Strategy 4: fix common LLM escape issues (unescaped newlines in strings)
+    (t) => {
+      const m = t.match(/\{[\s\S]*\}/);
+      if (!m) return null;
+      const fixed = m[0]
+        .replace(/(?<=:\s*"[^"]*)\n/g, "\\n")
+        .replace(/,\s*}/g, "}")
+        .replace(/,\s*]/g, "]");
+      return tryParse(fixed);
+    },
+    // Strategy 5: try array output (some models wrap in [...])
+    (t) => {
+      const m = t.match(/\[[\s\S]*\]/);
+      if (!m) return null;
+      const arr = tryParse(m[0]);
+      if (Array.isArray(arr) && arr.length > 0 && typeof arr[0] === "object") return arr[0];
+      return null;
+    },
+  ];
 
+  for (const strat of strategies) {
+    const out = strat(text.trim());
+    if (out !== null) return out;
+  }
+  return null;
+}
+
+function tryParseWithBraces(cleaned: string): unknown | null {
   const firstBrace = cleaned.indexOf("{");
   const lastBrace = cleaned.lastIndexOf("}");
   if (firstBrace === -1 || lastBrace === -1 || lastBrace <= firstBrace) return null;
-
   const jsonStr = removeTrailingCommas(cleaned.slice(firstBrace, lastBrace + 1));
+  return tryParse(jsonStr);
+}
+
+function tryParse(jsonStr: string): unknown | null {
   try {
     return JSON.parse(jsonStr);
   } catch {
@@ -79,7 +173,8 @@ function extractTextFromGeminiResponse(data: unknown): string {
     .join("\n");
 }
 
-export class GoogleHealthcareService {
+/** Vertex Gemini service for image reasoning and provisional OCR. Alias preserved for compatibility. */
+export class VertexImageService {
   private auth: GoogleAuth;
 
   constructor() {
@@ -106,7 +201,7 @@ export class GoogleHealthcareService {
     const { model, prompt, imageBase64, token, signal, maxTokens } = params;
     const endpoint = getVertexEndpoint(model);
     if (process.env.NODE_ENV !== "production") {
-      console.log(`[GoogleHealthcare] Calling model=${model}, endpoint=${endpoint}`);
+      console.log(`[VertexImage] Calling model=${model}, endpoint=${endpoint}`);
     }
 
     const body = {
@@ -137,16 +232,56 @@ export class GoogleHealthcareService {
     });
 
     if (response.status === 403) {
-      console.error(`[GoogleHealthcare] IAM 403 on model ${model}`);
+      console.error(`[VertexImage] IAM 403 on model ${model}`);
       throw new VertexHttpError(403, response.statusText);
     }
 
     if (!response.ok) {
       const errText = await response.text().catch(() => "");
-      console.error(`[GoogleHealthcare] HTTP ${response.status} on model=${model}, endpoint=${endpoint}:`, errText?.slice(0, 400));
+      console.error(`[VertexImage] HTTP ${response.status} on model=${model}, endpoint=${endpoint}:`, errText?.slice(0, 400));
       if (response.status === 404) {
-        console.error(`[GoogleHealthcare] Model 404 — "${model}" not found. Use VERTEX_MODEL env to override. Valid models: gemini-2.5-flash, gemini-2.0-flash-001`);
+        console.error(`[VertexImage] Model 404 — "${model}" not found. Use VERTEX_MODEL env to override. Valid models: gemini-2.5-flash, gemini-2.5-pro`);
       }
+      throw new VertexHttpError(response.status, response.statusText, errText);
+    }
+
+    const data = await response.json();
+    return extractTextFromGeminiResponse(data);
+  }
+
+  private async callGeminiText(params: {
+    prompt: string;
+    token: string;
+    signal: AbortSignal;
+    maxTokens: number;
+  }): Promise<string> {
+    const { prompt, token, signal, maxTokens } = params;
+    const model = VERTEX_CONFIG.extractionModel;
+    const endpoint = getVertexEndpoint(model);
+
+    const body = {
+      contents: [{ role: "user", parts: [{ text: prompt }] }],
+      generationConfig: {
+        maxOutputTokens: maxTokens,
+        temperature: 0.0,
+        topP: 0.8,
+        topK: 40,
+        responseMimeType: "application/json",
+      },
+    };
+
+    const response = await fetch(endpoint, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${token}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(body),
+      signal,
+    });
+
+    if (!response.ok) {
+      const errText = await response.text().catch(() => "");
       throw new VertexHttpError(response.status, response.statusText, errText);
     }
 
@@ -181,7 +316,7 @@ export class GoogleHealthcareService {
     try {
       const prompt = getIntakePrompt(language);
       const raw = await this.callGemini({
-        model: VERTEX_CONFIG.model,
+        model: VERTEX_CONFIG.classificationModel,
         prompt,
         imageBase64: rawBase64,
         token,
@@ -227,11 +362,517 @@ export class GoogleHealthcareService {
       clearTimeout(timer);
       const isAbort = err instanceof Error && err.name === "AbortError";
       if (isAbort) {
-        console.warn("[GoogleHealthcare] Intake timed out, using defaults");
+        console.warn("[VertexImage] Intake timed out, using defaults");
       } else {
-        console.warn("[GoogleHealthcare] Intake failed:", err instanceof Error ? err.message : err);
+        console.warn("[VertexImage] Intake failed:", err instanceof Error ? err.message : err);
       }
       return defaultIntakeResult();
+    }
+  }
+
+  /**
+   * OCR extraction from report screenshot/photo. Transcribes text and structures findings.
+   */
+  async runReportOcr(
+    imageBase64: string,
+    language: "tr" | "en"
+  ): Promise<ReportOcrResult | null> {
+    let token: string;
+    try {
+      token = await this.getAccessToken();
+    } catch (err: unknown) {
+      if ((err as NodeJS.ErrnoException)?.code === "ENOENT") {
+        throw new VertexCredentialError(`Credential file not found at ${KEY_FILE_PATH}`);
+      }
+      throw new VertexCredentialError(
+        err instanceof Error ? err.message : "Failed to obtain access token"
+      );
+    }
+
+    const rawBase64 = imageBase64.includes(",") ? imageBase64.split(",")[1] : imageBase64;
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), REPORT_OCR_TIMEOUT_MS);
+
+    try {
+      const prompt = getReportOcrPrompt(language);
+      const raw = await this.callGemini({
+        model: VERTEX_CONFIG.extractionModel,
+        prompt,
+        imageBase64: rawBase64,
+        token,
+        signal: controller.signal,
+        maxTokens: 4096,
+      });
+      clearTimeout(timer);
+
+      const parsed = extractJSONFromText(raw);
+      if (!parsed || typeof parsed !== "object") return null;
+
+      const obj = parsed as Record<string, unknown>;
+      return {
+        raw_text: String(obj.raw_text ?? ""),
+        structured_findings: Array.isArray(obj.structured_findings)
+          ? obj.structured_findings.map(String).filter(Boolean)
+          : [],
+        modality: obj.modality ? String(obj.modality) : undefined,
+        anatomical_region: obj.anatomical_region ? String(obj.anatomical_region) : undefined,
+        anatomical_levels: Array.isArray(obj.anatomical_levels)
+          ? obj.anatomical_levels.map(String).filter(Boolean)
+          : undefined,
+        impression_or_conclusion: obj.impression_or_conclusion
+          ? String(obj.impression_or_conclusion)
+          : undefined,
+        limitations: Array.isArray(obj.limitations)
+          ? obj.limitations.map(String).filter(Boolean)
+          : undefined,
+      };
+    } catch (err: unknown) {
+      clearTimeout(timer);
+      console.warn("[VertexImage] Report OCR failed:", err instanceof Error ? err.message : err);
+      return null;
+    }
+  }
+
+  /**
+   * Lightweight text extraction for localizer keyword detection.
+   * Extracts any visible text (labels, headers, UI) — used to detect "localizer", "scout", etc.
+   */
+  async extractVisibleText(imageBase64: string): Promise<string | null> {
+    let token: string;
+    try {
+      token = await this.getAccessToken();
+    } catch (err: unknown) {
+      if ((err as NodeJS.ErrnoException)?.code === "ENOENT") {
+        throw new VertexCredentialError(`Credential file not found at ${KEY_FILE_PATH}`);
+      }
+      throw new VertexCredentialError(
+        err instanceof Error ? err.message : "Failed to obtain access token"
+      );
+    }
+
+    const rawBase64 = imageBase64.includes(",") ? imageBase64.split(",")[1] : imageBase64;
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), LOCALIZER_OCR_TIMEOUT_MS);
+
+    const prompt = `Extract ALL visible text from this medical image: labels, headers, UI text, study info, series names.
+Return ONLY valid JSON: { "text": "concatenated extracted text" }`;
+
+    try {
+      const raw = await this.callGemini({
+        model: VERTEX_CONFIG.extractionModel,
+        prompt,
+        imageBase64: rawBase64,
+        token,
+        signal: controller.signal,
+        maxTokens: 1024,
+      });
+      clearTimeout(timer);
+
+      const parsed = extractJSONFromText(raw);
+      if (!parsed || typeof parsed !== "object") return null;
+      const obj = parsed as Record<string, unknown>;
+      const text = obj.text != null ? String(obj.text) : "";
+      return text.trim() || null;
+    } catch (err: unknown) {
+      clearTimeout(timer);
+      if (process.env.NODE_ENV !== "production") {
+        console.warn("[VertexImage] Localizer OCR failed:", err instanceof Error ? err.message : err);
+      }
+      return null;
+    }
+  }
+
+  /**
+   * Fusion: compare image-derived findings with official report text.
+   * Returns null on failure.
+   */
+  async runReportFusion(input: ReportFusionInput): Promise<ReportFusionResult | null> {
+    let token: string;
+    try {
+      token = await this.getAccessToken();
+    } catch (err: unknown) {
+      if ((err as NodeJS.ErrnoException)?.code === "ENOENT") {
+        throw new VertexCredentialError(`Credential file not found at ${KEY_FILE_PATH}`);
+      }
+      throw new VertexCredentialError(
+        err instanceof Error ? err.message : "Failed to obtain access token"
+      );
+    }
+
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), FUSION_TIMEOUT_MS);
+
+    try {
+      const prompt = buildReportFusionPrompt(input);
+      const raw = await this.callGeminiText({
+        prompt,
+        token,
+        signal: controller.signal,
+        maxTokens: 1500,
+      });
+      clearTimeout(timer);
+
+      const result = parseFusionResponse(raw);
+      if (!result) return null;
+
+      result.report_text_summary = input.reportRawText.slice(0, 500);
+      result.report_structured_findings = input.reportStructuredFindings;
+      return result;
+    } catch (err: unknown) {
+      clearTimeout(timer);
+      console.warn("[VertexImage] Report fusion failed:", err instanceof Error ? err.message : err);
+      return null;
+    }
+  }
+
+  /**
+   * Fusion engine — combines image findings and report OCR into unified interpretation.
+   * Returns raw model response for fusionEngine to parse.
+   */
+  async runFusionEngine(prompt: string): Promise<string> {
+    let token: string;
+    try {
+      token = await this.getAccessToken();
+    } catch (err: unknown) {
+      if ((err as NodeJS.ErrnoException)?.code === "ENOENT") {
+        throw new VertexCredentialError(`Credential file not found at ${KEY_FILE_PATH}`);
+      }
+      throw new VertexCredentialError(
+        err instanceof Error ? err.message : "Failed to obtain access token"
+      );
+    }
+
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), FUSION_TIMEOUT_MS);
+
+    try {
+      const raw = await this.callGeminiText({
+        prompt,
+        token,
+        signal: controller.signal,
+        maxTokens: 2000,
+      });
+      clearTimeout(timer);
+      return raw;
+    } catch (err: unknown) {
+      clearTimeout(timer);
+      if (err instanceof Error && err.name === "AbortError") {
+        throw new VertexTimeoutError(FUSION_TIMEOUT_MS);
+      }
+      if (err instanceof Error && err.name?.startsWith("Vertex")) throw err;
+      throw new VertexServiceError(
+        err instanceof Error ? err.message : "runFusionEngine failed",
+        err
+      );
+    }
+  }
+
+  /**
+   * Study-level structured reconciliation — correlates findings across images.
+   * Returns null if fewer than 2 diagnostic images or on failure.
+   */
+  async runStructuredReconciliation(
+    studyMeta: StudyMetadata,
+    perImageFindings: PerImageFindingForReconciliation[],
+    language: "tr" | "en"
+  ): Promise<StructuredReconciliationResult | null> {
+    const diagnosticCount = perImageFindings.filter(
+      (f) => f.diagnostic_value !== "non-diagnostic" && !f.is_localizer
+    ).length;
+    if (diagnosticCount < 2) return null;
+
+    let token: string;
+    try {
+      token = await this.getAccessToken();
+    } catch (err: unknown) {
+      if ((err as NodeJS.ErrnoException)?.code === "ENOENT") {
+        throw new VertexCredentialError(`Credential file not found at ${KEY_FILE_PATH}`);
+      }
+      throw new VertexCredentialError(
+        err instanceof Error ? err.message : "Failed to obtain access token"
+      );
+    }
+
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), RECONCILIATION_TIMEOUT_MS);
+
+    try {
+      const prompt = getStructuredReconciliationPrompt(studyMeta, perImageFindings, language);
+      const raw = await this.callGeminiText({
+        prompt,
+        token,
+        signal: controller.signal,
+        maxTokens: 1500,
+      });
+      clearTimeout(timer);
+
+      const parsed = extractJSONFromText(raw);
+      const jsonStr = parsed != null ? JSON.stringify(parsed) : raw;
+      return parseStructuredReconciliation(jsonStr);
+    } catch (err: unknown) {
+      clearTimeout(timer);
+      const isAbort = err instanceof Error && err.name === "AbortError";
+      if (isAbort) {
+        console.warn("[VertexImage] Structured reconciliation timed out");
+      } else {
+        console.warn("[VertexImage] Structured reconciliation failed:", err instanceof Error ? err.message : err);
+      }
+      return null;
+    }
+  }
+
+  /**
+   * Study-based radiology report generation.
+   * Vertex receives: study summary, slice statistics, detected anomalies — NOT raw slices.
+   * Replaces per-image analyzeImage for DICOM studies.
+   */
+  async analyzeStudy(
+    input: StudyReportVertexInput,
+    language: "tr" | "en" = "tr"
+  ): Promise<{
+    studyType: string;
+    region: string;
+    vertebraeFindings: Array<{ level: string; finding: string }>;
+    abnormalities: string[];
+    impression: string;
+    recommendedNextSteps: string[];
+  }> {
+    let token: string;
+    try {
+      token = await this.getAccessToken();
+    } catch (err: unknown) {
+      if ((err as NodeJS.ErrnoException)?.code === "ENOENT") {
+        throw new VertexCredentialError(`Credential file not found at ${KEY_FILE_PATH}`);
+      }
+      throw new VertexCredentialError(
+        err instanceof Error ? err.message : "Failed to obtain access token"
+      );
+    }
+
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), STUDY_REPORT_TIMEOUT_MS);
+
+    try {
+      const prompt = buildStudyReportPrompt(input, language);
+      const raw = await this.callGeminiText({
+        prompt,
+        token,
+        signal: controller.signal,
+        maxTokens: 3072,
+      });
+      clearTimeout(timer);
+
+      const parsed = extractJSONFromText(raw);
+      if (!parsed || typeof parsed !== "object") {
+        console.warn("[VertexImage] analyzeStudy JSON parse failed, preview:", raw?.slice(0, 300));
+        throw new VertexParseError("analyzeStudy returned unparseable response", raw?.slice(0, 200));
+      }
+
+      const obj = parsed as Record<string, unknown>;
+      return {
+        studyType: String(obj.studyType ?? input.studySummary.studyType ?? ""),
+        region: String(obj.region ?? input.studySummary.region ?? ""),
+        vertebraeFindings: Array.isArray(obj.vertebraeFindings)
+          ? obj.vertebraeFindings.map((v: unknown) => {
+              const item = v as Record<string, unknown>;
+              return {
+                level: String(item?.level ?? ""),
+                finding: String(item?.finding ?? ""),
+              };
+            })
+          : input.studySummary.vertebraeFindings ?? [],
+        abnormalities: Array.isArray(obj.abnormalities)
+          ? obj.abnormalities.map(String).filter(Boolean)
+          : [],
+        impression: String(obj.impression ?? ""),
+        recommendedNextSteps: Array.isArray(obj.recommendedNextSteps)
+          ? obj.recommendedNextSteps.map(String).filter(Boolean)
+          : [],
+      };
+    } catch (err: unknown) {
+      clearTimeout(timer);
+      if (err instanceof Error && err.name === "AbortError") {
+        throw new VertexTimeoutError(STUDY_REPORT_TIMEOUT_MS);
+      }
+      if (err instanceof Error && err.name?.startsWith("Vertex")) throw err;
+      throw new VertexServiceError(
+        err instanceof Error ? err.message : "analyzeStudy failed",
+        err
+      );
+    }
+  }
+
+  /**
+   * Domain-aware study analysis. Uses domain-specific prompts (spine, brain, chest, abdomen, general).
+   */
+  async analyzeStudyUniversal(
+    input: StudyReportVertexInputUniversal,
+    language: "tr" | "en" = "tr"
+  ): Promise<Record<string, unknown>> {
+    let token: string;
+    try {
+      token = await this.getAccessToken();
+    } catch (err: unknown) {
+      if ((err as NodeJS.ErrnoException)?.code === "ENOENT") {
+        throw new VertexCredentialError(`Credential file not found at ${KEY_FILE_PATH}`);
+      }
+      throw new VertexCredentialError(
+        err instanceof Error ? err.message : "Failed to obtain access token"
+      );
+    }
+
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), STUDY_REPORT_TIMEOUT_MS);
+
+    try {
+      const prompt = buildStudyReportPromptUniversal(input, language);
+      const raw = await this.callGeminiText({
+        prompt,
+        token,
+        signal: controller.signal,
+        maxTokens: 3072,
+      });
+      clearTimeout(timer);
+
+      const parsed = extractJSONFromText(raw);
+      if (!parsed || typeof parsed !== "object") {
+        console.warn("[VertexImage] analyzeStudyUniversal JSON parse failed");
+        throw new VertexParseError("analyzeStudyUniversal returned unparseable response", raw?.slice(0, 200));
+      }
+
+      return parsed as Record<string, unknown>;
+    } catch (err: unknown) {
+      clearTimeout(timer);
+      if (err instanceof Error && err.name === "AbortError") {
+        throw new VertexTimeoutError(STUDY_REPORT_TIMEOUT_MS);
+      }
+      if (err instanceof Error && err.name?.startsWith("Vertex")) throw err;
+      throw new VertexServiceError(
+        err instanceof Error ? err.message : "analyzeStudyUniversal failed",
+        err
+      );
+    }
+  }
+
+  /** Analyze a single DICOM slice image with domain-specific prompts. */
+  async analyzeDicomSlice(
+    imageBase64: string,
+    ctx: DicomSliceAnalysisContext,
+    token?: string
+  ): Promise<DicomSliceAnalysisResult> {
+    const resolvedToken =
+      token ?? (await this.getAccessToken());
+    const prompt = getDicomSliceAnalysisPrompt(ctx);
+    const rawBase64 = imageBase64.includes(",")
+      ? imageBase64.split(",")[1]
+      : imageBase64;
+
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), EXTRACTION_TIMEOUT_MS);
+
+    try {
+      const raw = await this.callGemini({
+        model: VERTEX_CONFIG.extractionModel,
+        prompt,
+        imageBase64: rawBase64 ?? imageBase64,
+        token: resolvedToken,
+        signal: controller.signal,
+        maxTokens: 1024,
+      });
+      clearTimeout(timer);
+
+      const parsed = extractJSONFromText(raw);
+      const obj = (parsed && typeof parsed === "object"
+        ? parsed
+        : {}) as Record<string, unknown>;
+
+      const getArr = (k: string) =>
+        (Array.isArray(obj[k]) ? obj[k] : []).map(String).filter(Boolean);
+
+      return {
+        findings: getArr("findings"),
+        abnormalities: getArr("abnormalities"),
+        confidence: typeof obj.confidence === "number"
+          ? Math.max(0, Math.min(100, obj.confidence))
+          : 50,
+        limitations: getArr("limitations"),
+        sliceDescription: String(obj.sliceDescription ?? ""),
+        sliceIndex: ctx.sliceIndex,
+      };
+    } catch (err: unknown) {
+      clearTimeout(timer);
+      if (err instanceof Error && err.name === "AbortError") {
+        throw new VertexTimeoutError(EXTRACTION_TIMEOUT_MS);
+      }
+      throw err;
+    }
+  }
+
+  /**
+   * Domain-specific structured image analysis.
+   * Returns raw parsed JSON for brain, chest, spine, abdomen analyzers.
+   */
+  async runDomainStructuredAnalysis(
+    domain: MedicalDomain,
+    imageBase64: string,
+    language: "tr" | "en",
+    options?: {
+      sliceIndex?: number;
+      totalSlices?: number;
+      modality?: string;
+      anatomicalRegion?: string;
+    }
+  ): Promise<Record<string, unknown>> {
+    let token: string;
+    try {
+      token = await this.getAccessToken();
+    } catch (err: unknown) {
+      if ((err as NodeJS.ErrnoException)?.code === "ENOENT") {
+        throw new VertexCredentialError(`Credential file not found at ${KEY_FILE_PATH}`);
+      }
+      throw new VertexCredentialError(
+        err instanceof Error ? err.message : "Failed to obtain access token"
+      );
+    }
+
+    const rawBase64 = imageBase64.includes(",") ? imageBase64.split(",")[1] : imageBase64;
+    const prompt = getDomainAnalyzerPrompt({
+      domain,
+      language,
+      modality: options?.modality,
+      anatomicalRegion: options?.anatomicalRegion,
+      sliceIndex: options?.sliceIndex,
+      totalSlices: options?.totalSlices,
+    });
+
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), DOMAIN_ANALYZER_TIMEOUT_MS);
+
+    try {
+      const raw = await this.callGemini({
+        model: VERTEX_CONFIG.extractionModel,
+        prompt,
+        imageBase64: rawBase64,
+        token,
+        signal: controller.signal,
+        maxTokens: 2048,
+      });
+      clearTimeout(timer);
+
+      const parsed = extractJSONFromText(raw);
+      if (!parsed || typeof parsed !== "object") {
+        throw new VertexParseError(
+          "Domain analyzer returned unparseable response",
+          raw?.slice(0, 200)
+        );
+      }
+      return parsed as Record<string, unknown>;
+    } catch (err: unknown) {
+      clearTimeout(timer);
+      if (err instanceof Error && err.name === "AbortError") {
+        throw new VertexTimeoutError(DOMAIN_ANALYZER_TIMEOUT_MS);
+      }
+      throw err;
     }
   }
 
@@ -245,7 +886,7 @@ export class GoogleHealthcareService {
 
     try {
       const prompt = getClassificationPrompt(language);
-      const model = VERTEX_CONFIG.model;
+      const model = VERTEX_CONFIG.classificationModel;
       const raw = await this.callGemini({
         model,
         prompt,
@@ -259,7 +900,7 @@ export class GoogleHealthcareService {
 
       const parsed = extractJSONFromText(raw);
       if (!parsed || typeof parsed !== "object") {
-        console.warn("[GoogleHealthcare] Classification JSON parse failed, preview:", raw?.slice(0, 200));
+        console.warn("[VertexImage] Classification JSON parse failed, preview:", raw?.slice(0, 200));
         return defaultClassification();
       }
 
@@ -290,9 +931,9 @@ export class GoogleHealthcareService {
       clearTimeout(timer);
       const isAbort = err instanceof Error && err.name === "AbortError";
       if (isAbort) {
-        console.warn("[GoogleHealthcare] Classification timed out, using defaults");
+        console.warn("[VertexImage] Classification timed out, using defaults");
       } else {
-        console.warn("[GoogleHealthcare] Classification failed:", err instanceof Error ? err.message : err);
+        console.warn("[VertexImage] Classification failed:", err instanceof Error ? err.message : err);
       }
       return defaultClassification();
     }
@@ -312,54 +953,48 @@ export class GoogleHealthcareService {
       const prompt = getDomainPrompt(domainRoute, language);
 
       let raw: string;
-      let model = VERTEX_CONFIG.model;
+      let model = VERTEX_CONFIG.extractionModel;
 
-      try {
-        raw = await this.callGemini({
-          model: VERTEX_CONFIG.model,
-          prompt,
-          imageBase64,
-          token,
-          signal: controller.signal,
-          maxTokens: 3072,
-        });
-      } catch (primaryErr) {
-        if (primaryErr instanceof VertexHttpError) {
-          if (primaryErr.status === 403) throw primaryErr;
-          if (primaryErr.status === 404) {
-            console.error(`[GoogleHealthcare] Primary model (${VERTEX_CONFIG.model}) returned 404. Set VERTEX_MODEL=gemini-2.0-flash-001 if 2.5 is unavailable.`);
-            throw primaryErr;
-          }
-        }
-        const errMsg = primaryErr instanceof Error ? primaryErr.message : String(primaryErr);
-        console.warn(`[GoogleHealthcare] Primary model (${VERTEX_CONFIG.model}) failed:`, errMsg?.slice(0, 200));
-        console.warn(`[GoogleHealthcare] Trying fallback: ${VERTEX_CONFIG.fallbackModel}`);
-        model = VERTEX_CONFIG.fallbackModel;
-        raw = await this.callGemini({
-          model: VERTEX_CONFIG.fallbackModel,
-          prompt,
-          imageBase64,
-          token,
-          signal: controller.signal,
-          maxTokens: 3072,
-        });
-      }
+      raw = await this.callGemini({
+        model: VERTEX_CONFIG.extractionModel,
+        prompt,
+        imageBase64,
+        token,
+        signal: controller.signal,
+        maxTokens: 3072,
+      });
 
       clearTimeout(timer);
 
       const parsed = extractJSONFromText(raw);
       if (!parsed || typeof parsed !== "object") {
-        console.error("[GoogleHealthcare] Extraction JSON parse failed");
-        console.error("[VertexParse] raw response preview:", raw?.slice(0, 300));
-        throw new VertexParseError(
-          "Extraction returned unparseable response",
-          raw?.slice(0, 200)
-        );
+        if (process.env.NODE_ENV !== "production") {
+          console.error("[VertexImage] Extraction JSON parse failed, raw preview:", raw?.slice(0, 500));
+        }
+        // Stability: return controlled fallback instead of hard failure
+        const fallback: Record<string, unknown> = {
+          diagnosis: "Interpretation could not be extracted from model response.",
+          findings: "Limited visibility. Please ensure image quality and try again.",
+          limitations: ["AI response was not in expected format. Manual review recommended."],
+          severity: "medium",
+          affected_organ: "Unknown",
+          modality: "",
+          anatomical_region: "",
+        };
+        console.warn("[VertexImage] Using fallback extraction due to parse failure");
+        return { extraction: fallback, model };
       }
 
       const obj = parsed as Record<string, unknown>;
       if (Object.keys(obj).length === 0) {
-        throw new VertexParseError("Extraction returned empty object");
+        const fallback: Record<string, unknown> = {
+          diagnosis: "No structured findings could be extracted.",
+          findings: "",
+          limitations: ["Empty model response."],
+          severity: "medium",
+          affected_organ: "Unknown",
+        };
+        return { extraction: fallback, model };
       }
 
       return { extraction: obj, model };
@@ -367,7 +1002,7 @@ export class GoogleHealthcareService {
       clearTimeout(timer);
 
       if (err instanceof Error && err.name === "AbortError") {
-        console.error("[GoogleHealthcare] Extraction timed out");
+        console.error("[VertexImage] Extraction timed out");
         throw new VertexTimeoutError(EXTRACTION_TIMEOUT_MS);
       }
       if (err instanceof Error && err.name?.startsWith("Vertex")) {
@@ -377,7 +1012,7 @@ export class GoogleHealthcareService {
         throw new VertexCredentialError(`Credential file not found at ${KEY_FILE_PATH}`);
       }
 
-      console.error("[GoogleHealthcare] Extraction error:", err instanceof Error ? err.message : err);
+      console.error("[VertexImage] Extraction error:", err instanceof Error ? err.message : err);
       throw new VertexServiceError(
         err instanceof Error ? err.message : "Unknown extraction error",
         err
@@ -404,12 +1039,12 @@ export class GoogleHealthcareService {
     const rawBase64 = imageBase64.includes(',') ? imageBase64.split(',')[1] : imageBase64;
 
     // STEP 1: Classification
-    console.log("[GoogleHealthcare] Step 1: Classification...");
+    console.log("[VertexImage] Step 1: Classification...");
     const classification = await this.runClassification(rawBase64, token, language);
 
     // Route to universal assessment if confidence is too low
     if (classification.confidence < 50 && classification.domain_route !== "unknown") {
-      console.log(`[GoogleHealthcare] Low confidence (${classification.confidence}), overriding route from "${classification.domain_route}" to "unknown"`);
+      console.log(`[VertexImage] Low confidence (${classification.confidence}), overriding route from "${classification.domain_route}" to "unknown"`);
       classification.domain_route = "unknown";
       if (!classification.limitations.some(l => l.toLowerCase().includes("confidence"))) {
         classification.limitations.push(
@@ -421,14 +1056,14 @@ export class GoogleHealthcareService {
     const domainRoute = classification.domain_route;
 
     if (process.env.NODE_ENV !== "production") {
-      console.log(`[GoogleHealthcare] Classification result: route=${domainRoute}, modality=${classification.modality}, region=${classification.anatomical_region}, confidence=${classification.confidence}`);
+      console.log(`[VertexImage] Classification result: route=${domainRoute}, modality=${classification.modality}, region=${classification.anatomical_region}, confidence=${classification.confidence}`);
     }
 
     // STEP 2: Specialist Extraction
     if (process.env.NODE_ENV !== "production") {
-      console.log(`[GoogleHealthcare] Using extraction model: ${VERTEX_CONFIG.model} (fallback: ${VERTEX_CONFIG.fallbackModel})`);
+      console.log(`[VertexImage] Using extraction model: ${VERTEX_CONFIG.extractionModel}`);
     }
-    console.log(`[GoogleHealthcare] Step 2: Specialist extraction (${domainRoute})...`);
+    console.log(`[VertexImage] Step 2: Specialist extraction (${domainRoute})...`);
     const { extraction, model } = await this.runExtraction({
       imageBase64: rawBase64,
       token,
@@ -437,7 +1072,7 @@ export class GoogleHealthcareService {
     });
 
     if (process.env.NODE_ENV !== "production") {
-      console.log(`[GoogleHealthcare] Extraction complete via ${model}, keys: ${Object.keys(extraction).join(", ")}`);
+      console.log(`[VertexImage] Extraction complete via ${model}, keys: ${Object.keys(extraction).join(", ")}`);
     }
 
     return {
@@ -478,4 +1113,18 @@ function defaultClassification(): ClassificationResult {
   };
 }
 
-export const googleHealthcare = new GoogleHealthcareService();
+/** Singleton. Use for image reasoning, OCR, fusion. */
+export const googleHealthcare = new VertexImageService();
+
+// ─── Cloud Healthcare API DICOM Store ─────────────────────
+// Re-export Healthcare DICOM functions for upload/retrieve flow.
+
+export {
+  uploadDicomStudy,
+  getStudyMetadata,
+  getStudySeries,
+  downloadSeries,
+  type DicomUploadResult,
+  type StudyMetadata,
+  type SeriesInfo,
+} from "./healthcareDicom";

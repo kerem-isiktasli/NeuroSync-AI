@@ -20,21 +20,31 @@ import { buildReconciliationBlock } from "@/lib/ai/crossImageReconciliation";
 import {
   buildStudyIntakeSummary,
   getDiagnosticImageIndices,
+  getViewableImageIndices,
   type StudyIntakeSummary,
 } from "@/lib/ai/studyIntake";
 import type { PerImageIntakeResult } from "@/lib/ai/intakePrompts";
 import type { DomainRoute, ClassificationResult } from "@/lib/ai/promptRouter";
 import { ANTHROPIC_CONFIG } from "@/lib/anthropicConfig";
+import { applyContradictionGuards } from "@/lib/reportContradictionGuard";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
+/** Allow large multipart uploads (50 images). JSON path still limited by default body parser. */
+export const maxDuration = 300;
 
 const anthropic = new Anthropic({
   apiKey: process.env.ANTHROPIC_API_KEY,
 });
 
-const MAX_IMAGES = 8;
+const MAX_IMAGES = 50;
 const MAX_IMAGE_BYTES = 20 * 1024 * 1024;
+/** Per-image Vertex call timeout (classify+extract). */
+const PER_IMAGE_TIMEOUT_MS = 60_000;
+/** Maximum total Vertex analysis phase duration. */
+const VERTEX_PHASE_MAX_MS = 180_000;
+/** Process images in chunks of this size for bounded concurrency. */
+const CHUNK_SIZE = 3;
 const SUPPORTED_IMAGE_MIME = new Set([
   "image/jpeg",
   "image/jpg",
@@ -133,6 +143,18 @@ const FinalResponseSchema = z.object({
     limitations: [],
     next_steps: [],
   }),
+  reportMode: z.string().optional(),
+  reportLabel: z.object({
+    reportMode: z.string(),
+    inputTypeAnalyzed: z.string(),
+    pipelineRan: z.string(),
+    whatWasActuallyAnalyzed: z.array(z.string()),
+    whatCouldNotBeDetermined: z.array(z.string()),
+    analyzedSliceCount: z.number().optional(),
+    analyzedFileCount: z.number().optional(),
+    confidenceTier: z.string().optional(),
+    adequacyTier: z.string().optional(),
+  }).optional(),
 });
 
 type FinalResponse = z.infer<typeof FinalResponseSchema>;
@@ -514,6 +536,21 @@ function buildReportOnlyResponse(params: {
   const { language, fileNames } = params;
   const tr = language === "tr";
 
+  const reportLabel = {
+    reportMode: "DOCUMENT_EXTRACTION_REPORT" as const,
+    inputTypeAnalyzed: tr ? "Rapor ekran görüntüsü / fotoğraf" : "Report screenshot / photo",
+    pipelineRan: "intake -> report-ocr (no OCR)",
+    whatWasActuallyAnalyzed: [
+      tr ? "Görüntü sınıflandırması: rapor görüntüsü tespit edildi" : "Image classification: report image detected",
+    ],
+    whatCouldNotBeDetermined: [
+      tr ? "Metin çıkarımı (OCR desteklenmiyor)" : "Text extraction (OCR not supported)",
+      tr ? "Görüntü yorumlaması yapılamadı" : "Image interpretation could not be performed",
+    ],
+    analyzedFileCount: fileNames.length,
+    adequacyTier: "limited" as const,
+  };
+
   return {
     summary: tr
       ? "Yüklenen içerik yazılı tıbbi rapor ekran görüntüsü veya fotoğrafı gibi görünüyor."
@@ -568,6 +605,8 @@ function buildReportOnlyResponse(params: {
         tr ? "Tanısal MRI/CT/XR kesitleri yükleyin" : "Upload diagnostic MRI/CT/X-ray slices",
       ],
     },
+    reportMode: "DOCUMENT_EXTRACTION_REPORT",
+    reportLabel,
   };
 }
 
@@ -598,6 +637,25 @@ function buildInsufficientDataResponse(params: {
       ? "Detaylı yorumlama için tanısal kesitler (sagittal, aksiyel, koronal) gerekir."
       : "Diagnostic slices (sagittal, axial, coronal) are required for detailed interpretation."
   );
+
+  const isLocalizerOnly = localizerCount > 0 && intakeSummary.diagnosticImageCount === 0;
+  const reportMode = isLocalizerOnly ? "LOCALIZER_DETECTED_REPORT" : "LIMITED_IMAGE_ANALYSIS_REPORT";
+  const reportLabel = {
+    reportMode,
+    inputTypeAnalyzed: tr
+      ? (localizerCount > 0 ? `Lokalizör görüntüleri (${localizerCount})` : "Yetersiz görüntü seti")
+      : (localizerCount > 0 ? `Localizer images (${localizerCount})` : "Insufficient image set"),
+    pipelineRan: "intake -> insufficient-data",
+    whatWasActuallyAnalyzed: [
+      tr ? "Görüntü sınıflandırması yapıldı" : "Image classification performed",
+      ...(localizerCount > 0 ? [tr ? "Lokalizör/scout tespit edildi" : "Localizer/scout detected"] : []),
+    ],
+    whatCouldNotBeDetermined: [
+      tr ? "Tanısal yorumlama — yeterli tanısal kesit yok" : "Diagnostic interpretation — no sufficient diagnostic slices",
+    ],
+    analyzedFileCount: intakeSummary.viewableImageCount ?? 0,
+    adequacyTier: intakeSummary.adequacyTier ?? "limited",
+  };
 
   return {
     summary: tr
@@ -653,6 +711,8 @@ function buildInsufficientDataResponse(params: {
         tr ? "Tanısal MRI/CT kesitleri yükleyin" : "Upload diagnostic MRI/CT slices",
       ],
     },
+    reportMode,
+    reportLabel,
   };
 }
 
@@ -780,29 +840,105 @@ export async function POST(req: Request) {
   };
 
   (async () => {
-    try {
-      const json = await req.json();
-      const parsedBody = RequestSchema.safeParse(json);
+    const phaseStart = Date.now();
+    const uploadId = `img-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    const traceCheckpoints: Array<{ step: string; status: string; durationMs: number; counts?: Record<string, number> }> = [];
+    const traceErrors: Array<{ step: string; errorCode: string; message: string }> = [];
+    let tracePipeline = "unknown";
+    let traceDomain = "unknown";
 
-      if (!parsedBody.success) {
-        await sendEvent("error", {
-          message: "Invalid request body",
-          details: parsedBody.error.flatten(),
-        });
-        return;
+    const logPhase = (phase: string, counts?: Record<string, number>) => {
+      const elapsed = Date.now() - phaseStart;
+      traceCheckpoints.push({ step: phase, status: "ok", durationMs: elapsed, ...(counts ? { counts } : {}) });
+      if (process.env.NODE_ENV !== "production") {
+        console.log(`[analyze][${uploadId}] ${phase} @ +${elapsed}ms`);
       }
+    };
+    const logError = (step: string, errorCode: string, message: string) => {
+      traceErrors.push({ step, errorCode, message });
+      console.error(`[analyze][${uploadId}] ERROR ${step}: ${errorCode} — ${message}`);
+    };
+    try {
+      const contentType = req.headers.get("content-type") ?? "";
+      let imagesInput: Array<{ imageBase64: string; fileName: string }> = [];
+      let language: "tr" | "en" = "tr";
+      let scholarData = "";
+      let clientRoutingContext: {
+        pipeline?: string;
+        domain?: string;
+        confidenceLevel?: string;
+        bodyRegionSource?: string;
+        reportStyle?: string;
+        safetyLevel?: string;
+        reasons?: string[];
+        conflicts?: string[];
+      } | null = null;
 
-      const { scholarData, language } = parsedBody.data;
+      if (contentType.includes("multipart/form-data")) {
+        const formData = await req.formData();
+        language = (formData.get("language") as string)?.toLowerCase().trim() === "en" ? "en" : "tr";
+        scholarData = (formData.get("scholarData") as string) ?? "";
 
-      const imagesInput: Array<{ imageBase64: string; fileName: string }> =
-        Array.isArray(parsedBody.data.images) && parsedBody.data.images.length > 0
-          ? parsedBody.data.images
-          : parsedBody.data.imageBase64
-          ? [{
-              imageBase64: parsedBody.data.imageBase64,
-              fileName: parsedBody.data.fileName || "Image",
-            }]
-          : [];
+        const routingRaw = formData.get("routingContext") as string | null;
+        if (routingRaw) {
+          try {
+            clientRoutingContext = JSON.parse(routingRaw);
+            logPhase("client-routing-parsed", {
+              pipeline: clientRoutingContext?.pipeline as unknown as number ?? 0,
+              domain: clientRoutingContext?.domain as unknown as number ?? 0,
+            });
+          } catch {
+            logError("client-routing", "PARSE_ERROR", "Failed to parse routingContext from client");
+          }
+        }
+        const files = [
+          ...(formData.getAll("images") as File[]),
+          ...(formData.getAll("files") as File[]),
+        ].filter((v): v is File => v instanceof File);
+
+        if (files.length > MAX_IMAGES) {
+          await sendEvent("error", {
+            message: `Too many images. Maximum ${MAX_IMAGES} allowed, received ${files.length}.`,
+          });
+          return;
+        }
+
+        for (const file of files) {
+          const buf = await file.arrayBuffer();
+          const base64 = Buffer.from(buf).toString("base64");
+          const mime = file.type || "image/jpeg";
+          const dataUri = `data:${mime};base64,${base64}`;
+          imagesInput.push({ imageBase64: dataUri, fileName: file.name || "Image" });
+        }
+      } else {
+        const json = await req.json();
+        const parsedBody = RequestSchema.safeParse(json);
+
+        if (!parsedBody.success) {
+          const flat = parsedBody.error.flatten();
+          const isArrayMax = flat.fieldErrors?.images?.[0]?.includes("at most");
+          const imgCount = Array.isArray(json?.images) ? json.images.length : 0;
+          await sendEvent("error", {
+            message: isArrayMax && imgCount > 0
+              ? `Too many images. Maximum ${MAX_IMAGES} allowed, received ${imgCount}.`
+              : "Invalid request body",
+            details: flat,
+          });
+          return;
+        }
+
+        language = parsedBody.data.language ?? "tr";
+        scholarData = parsedBody.data.scholarData ?? "";
+        imagesInput =
+          Array.isArray(parsedBody.data.images) && parsedBody.data.images.length > 0
+            ? parsedBody.data.images
+            : parsedBody.data.imageBase64
+              ? [{
+                  imageBase64: parsedBody.data.imageBase64,
+                  fileName: parsedBody.data.fileName || "Image",
+                }]
+              : [];
+      }
 
       if (!imagesInput.length) {
         await sendEvent("error", { message: "No images provided" });
@@ -815,7 +951,9 @@ export async function POST(req: Request) {
       });
 
       // ──── NORMALIZATION ────
+      logPhase("normalize-start");
       const preparedImages = await normalizeImages(imagesInput);
+      logPhase("normalize-done");
 
       await sendEvent("status", {
         step: "normalized",
@@ -832,39 +970,54 @@ export async function POST(req: Request) {
           : "Analyzing upload type...",
       });
 
+      logPhase("intake-start");
       const perImageIntake: PerImageIntakeResult[] = [];
-      for (let i = 0; i < preparedImages.length; i++) {
-        const img = preparedImages[i];
-        try {
-          const rawBase64 = img.originalBase64.includes(",")
-            ? img.originalBase64.split(",")[1]
-            : img.originalBase64;
-          const result = await googleHealthcare.runIntakeClassification(rawBase64, language);
-          perImageIntake.push({
-            imageIndex: i,
-            fileName: img.fileName,
-            ...result,
-          });
-        } catch (err) {
-          const msg = err instanceof Error ? err.message : "Intake failed";
-          console.warn(`[analyze] Intake failed for ${img.fileName}:`, msg);
-          perImageIntake.push({
-            imageIndex: i,
-            fileName: img.fileName,
-            upload_type: "unknown",
-            modality_guess: "",
-            anatomical_region_guess: "",
-            image_plane: "unknown",
-            diagnostic_value: "low",
-            contains_ui_overlay: false,
-            contains_report_text: false,
-            confidence: 0,
-            reasons: [`Intake error: ${msg}`],
-          });
+
+      // Chunked parallel intake to avoid sequential hang on many images
+      for (let c = 0; c < preparedImages.length; c += CHUNK_SIZE) {
+        const chunk = preparedImages.slice(c, c + CHUNK_SIZE);
+        const chunkResults = await Promise.allSettled(
+          chunk.map(async (img, ci) => {
+            const idx = c + ci;
+            try {
+              const rawBase64 = img.originalBase64.includes(",")
+                ? img.originalBase64.split(",")[1]
+                : img.originalBase64;
+              const result = await googleHealthcare.runIntakeClassification(rawBase64, language);
+              return { imageIndex: idx, fileName: img.fileName, ...result };
+            } catch (err) {
+              const msg = err instanceof Error ? err.message : "Intake failed";
+              console.warn(`[analyze] Intake failed for ${img.fileName}:`, msg);
+              return {
+                imageIndex: idx,
+                fileName: img.fileName,
+                upload_type: "unknown" as const,
+                modality_guess: "",
+                anatomical_region_guess: "",
+                image_plane: "unknown" as const,
+                diagnostic_value: "low" as const,
+                contains_ui_overlay: false,
+                contains_report_text: false,
+                confidence: 0,
+                reasons: [`Intake error: ${msg}`],
+              };
+            }
+          })
+        );
+        for (const r of chunkResults) {
+          if (r.status === "fulfilled") perImageIntake.push(r.value as PerImageIntakeResult);
         }
       }
 
       const intakeSummary: StudyIntakeSummary = buildStudyIntakeSummary(perImageIntake);
+      tracePipeline = intakeSummary.recommendedPipeline;
+      logPhase("intake-done", {
+        imageCount: intakeSummary.imageCount,
+        diagnosticCount: intakeSummary.diagnosticImageCount,
+        viewableCount: intakeSummary.viewableImageCount,
+        localizerCount: intakeSummary.localizerCount,
+        reportImageCount: intakeSummary.reportImageCount,
+      });
 
       await sendEvent("log", {
         phase: "intake-complete",
@@ -878,6 +1031,39 @@ export async function POST(req: Request) {
           ? `Yükleme analizi: ${intakeSummary.recommendedPipeline}, ${intakeSummary.diagnosticImageCount} tanısal görüntü`
           : `Intake: ${intakeSummary.recommendedPipeline}, ${intakeSummary.diagnosticImageCount} diagnostic images`,
       });
+
+      // ──── CLIENT INTAKE-AWARE ROUTING CONTEXT ────
+      if (clientRoutingContext) {
+        logPhase("client-routing-applied");
+        await sendEvent("log", {
+          phase: "intake-routing",
+          clientPipeline: clientRoutingContext.pipeline,
+          clientDomain: clientRoutingContext.domain,
+          clientConfidence: clientRoutingContext.confidenceLevel,
+          clientSafety: clientRoutingContext.safetyLevel,
+          clientReportStyle: clientRoutingContext.reportStyle,
+          conflicts: clientRoutingContext.conflicts,
+          reasons: clientRoutingContext.reasons,
+          message: `Client routing: pipeline=${clientRoutingContext.pipeline}, domain=${clientRoutingContext.domain}, confidence=${clientRoutingContext.confidenceLevel}`,
+        });
+
+        // If client says document-report pipeline but backend detected diagnostic images,
+        // log conflict but let backend proceed with image analysis (safest path).
+        if (
+          clientRoutingContext.pipeline === "document-report" &&
+          intakeSummary.diagnosticImageCount > 0
+        ) {
+          await sendEvent("log", {
+            phase: "routing-conflict",
+            message: "Client says document-report but backend found diagnostic images. Proceeding with image-analysis.",
+          });
+        }
+
+        // Inject client domain hint for downstream use
+        if (clientRoutingContext.domain && clientRoutingContext.domain !== "general-radiology") {
+          traceDomain = clientRoutingContext.domain;
+        }
+      }
 
       // ──── ROUTING: report-ocr or insufficient-data with no diagnostic images ────
       if (
@@ -911,113 +1097,103 @@ export async function POST(req: Request) {
         return;
       }
 
-      if (
-        intakeSummary.recommendedPipeline === "insufficient-data" &&
-        intakeSummary.diagnosticImageCount === 0
-      ) {
-        await sendEvent("status", {
-          step: "insufficient-data",
-          message: language === "tr"
-            ? "Yüklenen görüntüler tanısal yorumlama için yeterli değil."
-            : "Uploaded images are not sufficient for interpretation.",
-        });
-        const insufficientResult = buildInsufficientDataResponse({
-          language,
-          fileNames: preparedImages.map((img) => img.fileName),
-          intakeSummary,
-        });
-        await sendEvent("result", {
-          ...insufficientResult,
-          meta: {
-            fileNames: preparedImages.map((img) => img.fileName),
-            pipeline: "intake -> insufficient-data",
-            intakeSummary: {
-              studyAdequacy: intakeSummary.studyAdequacy,
-              recommendedPipeline: intakeSummary.recommendedPipeline,
-              localizerCount: intakeSummary.localizerCount,
-              lowQualityCount: intakeSummary.lowQualityCount,
-            },
-          },
-        });
-        await sendEvent("done", { success: true });
-        return;
-      }
+      // NOTE: We no longer hard-reject on "insufficient-data" from intake.
+      // Intake can misclassify usable screenshots as non-diagnostic.
+      // Instead, we always attempt analysis and let the quality tier surface
+      // in the report. Only truly unusable images (0 viewable) get limited report.
 
-      // ──── Select images for image-analysis pipeline (diagnostic only) ────
+      // ──── Select images for image-analysis pipeline ────
+      // Prefer diagnostic images; fall back to all viewable; ultimate fallback: all images
       const diagnosticIndices = getDiagnosticImageIndices(perImageIntake);
-      const imagesToProcess =
-        diagnosticIndices.length > 0
-          ? diagnosticIndices.map((idx) => preparedImages[idx])
-          : preparedImages;
+      const viewableIndices = getViewableImageIndices(perImageIntake);
+      let indicesToProcess =
+        diagnosticIndices.length > 0 ? diagnosticIndices : viewableIndices;
+      if (indicesToProcess.length === 0) indicesToProcess = preparedImages.map((_, i) => i);
+      const imagesToProcess = indicesToProcess.map((idx) => preparedImages[idx]).filter(Boolean);
+      const useLimitedReportMode =
+        (diagnosticIndices.length === 0 && viewableIndices.length > 0) ||
+        intakeSummary.adequacyTier === "limited" ||
+        intakeSummary.adequacyTier === "unusable";
 
-      if (diagnosticIndices.length > 0 && diagnosticIndices.length < preparedImages.length) {
+      if (indicesToProcess.length > 0 && indicesToProcess.length < preparedImages.length) {
         await sendEvent("log", {
           phase: "intake-filter",
-          processed: diagnosticIndices.length,
-          skipped: preparedImages.length - diagnosticIndices.length,
+          processed: indicesToProcess.length,
+          skipped: preparedImages.length - indicesToProcess.length,
           message: language === "tr"
-            ? `${diagnosticIndices.length} tanısal görüntü işlenecek; ${preparedImages.length - diagnosticIndices.length} görüntü atlandı`
-            : `Processing ${diagnosticIndices.length} diagnostic images; skipping ${preparedImages.length - diagnosticIndices.length}`,
+            ? `${indicesToProcess.length} görüntü işlenecek; ${preparedImages.length - indicesToProcess.length} atlandı`
+            : `Processing ${indicesToProcess.length} images; skipping ${preparedImages.length - indicesToProcess.length}`,
         });
       }
 
-      // ──── CLASSIFICATION + EXTRACTION (per image) ────
+      // ──── CLASSIFICATION + EXTRACTION (chunked with timeout) ────
+      logPhase("vertex-batch-start");
       const vertexViews: VertexViewWithMeta[] = [];
       const vertexErrors: Array<{ fileName: string; error: string }> = [];
+      const vertexPhaseStart = Date.now();
 
-      for (let i = 0; i < imagesToProcess.length; i++) {
-        const current = imagesToProcess[i];
+      for (let c = 0; c < imagesToProcess.length; c += CHUNK_SIZE) {
+        if (Date.now() - vertexPhaseStart > VERTEX_PHASE_MAX_MS) {
+          await sendEvent("log", {
+            phase: "vertex-timeout",
+            processed: vertexViews.length,
+            total: imagesToProcess.length,
+            message: language === "tr"
+              ? `Analiz süresi aşıldı (${vertexViews.length}/${imagesToProcess.length} tamamlandı).`
+              : `Analysis timeout (${vertexViews.length}/${imagesToProcess.length} completed).`,
+          });
+          break;
+        }
 
+        const chunk = imagesToProcess.slice(c, c + CHUNK_SIZE);
         await sendEvent("log", {
-          phase: "vertex-analysis",
-          index: i + 1,
-          total: preparedImages.length,
-          fileName: current.fileName,
+          phase: "vertex-chunk",
+          chunkStart: c + 1,
+          chunkEnd: Math.min(c + CHUNK_SIZE, imagesToProcess.length),
+          total: imagesToProcess.length,
           message: language === "tr"
-            ? `${current.fileName} için sınıflandırma ve uzman analizi yapılıyor`
-            : `Running classification and specialist analysis for ${current.fileName}`,
+            ? `Görüntü ${c + 1}–${Math.min(c + CHUNK_SIZE, imagesToProcess.length)} / ${imagesToProcess.length} analiz ediliyor...`
+            : `Analyzing images ${c + 1}–${Math.min(c + CHUNK_SIZE, imagesToProcess.length)} of ${imagesToProcess.length}...`,
         });
 
-        try {
-          const view = await analyzeWithVertex(current, language);
-          vertexViews.push(view);
+        const chunkResults = await Promise.allSettled(
+          chunk.map(async (current) => {
+            const controller = new AbortController();
+            const timer = setTimeout(() => controller.abort(), PER_IMAGE_TIMEOUT_MS);
+            try {
+              const view = await analyzeWithVertex(current, language);
+              clearTimeout(timer);
+              return { ok: true as const, view, fileName: current.fileName };
+            } catch (error) {
+              clearTimeout(timer);
+              const message = error instanceof Error ? error.message : "Unknown Vertex error";
+              return { ok: false as const, fileName: current.fileName, error: message };
+            }
+          })
+        );
 
-          await sendEvent("partial_vertex", {
-            fileName: current.fileName,
-            diagnosis: view.finding.diagnosis,
-            organ: view.finding.affected_organ || view.finding.organ,
-            severity: view.finding.severity,
-            domainRoute: view.domainRoute,
-            modality: view.classification.modality,
-            anatomicalRegion: view.classification.anatomical_region,
-            imagePlane: view.classification.image_plane,
-            isLocalizer: view.classification.is_localizer,
-            diagnosticValue: view.classification.diagnostic_value,
-            seriesTypeGuess: view.classification.series_type_guess,
-          });
-
-          if (process.env.NODE_ENV !== "production") {
-            console.log(
-              `[analyze] ${current.fileName}: route=${view.domainRoute}, model=${view.model}, confidence=${view.classification.confidence}`
-            );
-          }
-        } catch (error) {
-          const message = error instanceof Error ? error.message : "Unknown Vertex error";
-          vertexErrors.push({ fileName: current.fileName, error: message });
-
-          if (isVertexError(error)) {
-            console.error(`[analyze] Vertex error for ${current.fileName}:`, error.code, error.message);
+        for (const r of chunkResults) {
+          if (r.status !== "fulfilled") continue;
+          const val = r.value;
+          if (val.ok) {
+            vertexViews.push(val.view);
+            await sendEvent("partial_vertex", {
+              fileName: val.fileName,
+              diagnosis: val.view.finding.diagnosis,
+              organ: val.view.finding.affected_organ || val.view.finding.organ,
+              severity: val.view.finding.severity,
+              domainRoute: val.view.domainRoute,
+              modality: val.view.classification.modality,
+              anatomicalRegion: val.view.classification.anatomical_region,
+            });
           } else {
-            console.error(`[analyze] Parse/validation failure for ${current.fileName}:`, message);
+            vertexErrors.push({ fileName: val.fileName, error: val.error });
+            logError("vertex-extraction", "VERTEX_FAIL", `${val.fileName}: ${val.error}`);
+            await sendEvent("log", { phase: "vertex-analysis-warning", fileName: val.fileName, message: val.error });
           }
-
-          await sendEvent("log", {
-            phase: "vertex-analysis-warning",
-            fileName: current.fileName,
-            message,
-          });
         }
       }
+      logPhase(`vertex-batch-done count=${vertexViews.length}/${imagesToProcess.length}`);
 
       // ──── ALL VERTEX FAILED → FALLBACK ────
       if (!vertexViews.length) {
@@ -1118,6 +1294,7 @@ export async function POST(req: Request) {
       // ──── DERIVE ADDITIONAL DATA REQUESTS (deterministic) ────
       const classificationForSynthesis = vertexViews[0]?.classification ?? null;
       const primaryDomainRoute = vertexViews[0]?.domainRoute ?? "unknown";
+      traceDomain = primaryDomainRoute;
       const allExtractionLimitations = vertexViews.flatMap((v) => v.finding.limitations ?? []);
 
       const additionalDataRequested = classificationForSynthesis
@@ -1172,6 +1349,7 @@ export async function POST(req: Request) {
       }
 
       // ──── SYNTHESIS (Claude) ────
+      logPhase("synthesis-start");
       await sendEvent("status", {
         step: "synthesizing",
         message: language === "tr"
@@ -1185,6 +1363,18 @@ export async function POST(req: Request) {
         language
       );
 
+      const synthesisPayload = {
+        uploadType: "screenshot-images",
+        fileCount: preparedImages.length,
+        imageCount: studyMeta.imageCount,
+        analyzedItemCount: vertexViews.length,
+        planesAvailable: studyMeta.planesAvailable,
+        sourceBranchName: "anthropic-synthesis",
+      };
+      if (process.env.NODE_ENV !== "production") {
+        console.log("[analyze] synthesis input:", JSON.stringify(synthesisPayload, null, 2));
+      }
+
       const synthesisUserMessage = buildSynthesisUserMessage({
         language,
         fileNames: preparedImages.map((img) => img.fileName),
@@ -1194,6 +1384,12 @@ export async function POST(req: Request) {
         additionalDataRequested,
         literatureContext: literatureCitations,
         routeQuestionHint,
+        patientContext: clientRoutingContext ? {
+          domain: clientRoutingContext.domain,
+          confidenceLevel: clientRoutingContext.confidenceLevel,
+          safetyLevel: clientRoutingContext.safetyLevel,
+          reportStyle: clientRoutingContext.reportStyle,
+        } : null,
         studyMetadata: {
           imageCount: studyMeta.imageCount,
           modality: studyMeta.modality,
@@ -1208,9 +1404,11 @@ export async function POST(req: Request) {
         crossImageReconciliation: reconciliationBlock,
         intakeSummary: {
           studyAdequacy: intakeSummary.studyAdequacy,
+          adequacyTier: intakeSummary.adequacyTier,
           recommendedPipeline: intakeSummary.recommendedPipeline,
           uploadTypesPresent: intakeSummary.uploadTypesPresent,
           diagnosticImageCount: intakeSummary.diagnosticImageCount,
+          viewableImageCount: intakeSummary.viewableImageCount,
           localizerCount: intakeSummary.localizerCount,
           reportImageCount: intakeSummary.reportImageCount,
           hasMixedUpload: intakeSummary.hasMixedUpload,
@@ -1270,6 +1468,18 @@ export async function POST(req: Request) {
         });
       }
 
+      const allFindingsText = vertexViews.map((v) => v.finding.findings ?? v.finding.diagnosis ?? "").join(" ").toLowerCase();
+      const contrastEnhancementPresent = /\b(enhancing|contrast|post.?contrast|gadolinium|kontrast)\b/i.test(allFindingsText);
+      const obviousAbnormalityPresent = /\b(mass|lesion|edema|ring.?enhanc|necrotic|abnormal)\b/i.test(allFindingsText);
+      applyContradictionGuards(finalResult, {
+        imageCount: vertexViews.length,
+        planesAvailable: studyMeta.planesAvailable,
+        displayUnit: "images",
+        contrastEnhancementPresent,
+        obviousAbnormalityPresent,
+        aggregatedFindingsCount: vertexViews.length,
+      });
+
       // ──── DERIVE CONFIDENCE ASSESSMENT ────
       const confidenceAssessment = deriveConfidenceAssessment({
         classification: classificationForSynthesis,
@@ -1280,9 +1490,44 @@ export async function POST(req: Request) {
         intakeSummary,
       });
 
+      const reportMode = useLimitedReportMode
+        ? "LIMITED_INTERPRETATION_REPORT"
+        : "FULL_INTERPRETATION_REPORT";
+
+      const reportLabel = {
+        reportMode,
+        inputTypeAnalyzed:
+          language === "tr"
+            ? `Tanısal görüntüler (${imagesToProcess.length} dosya)`
+            : `Diagnostic images (${imagesToProcess.length} files)`,
+        pipelineRan:
+          [
+            "classification",
+            "specialist-extraction",
+            reconciliationBlock ? "cross-image-reconciliation" : null,
+            literatureCitations.length ? "literature-search" : null,
+            "anthropic-synthesis",
+          ]
+            .filter(Boolean)
+            .join(" -> "),
+        whatWasActuallyAnalyzed: [
+          language === "tr" ? "Görüntü sınıflandırması ve uzman analizi" : "Image classification and specialist analysis",
+          language === "tr" ? "Çapraz görüntü karşılaştırması" : "Cross-image reconciliation",
+          language === "tr" ? "Sentez raporu" : "Synthesis report",
+        ],
+        whatCouldNotBeDetermined: (finalResult.report_sections?.limitations ?? []).slice(0, 3),
+        analyzedFileCount: imagesToProcess.length,
+        analyzedSliceCount: undefined,
+        displayUnit: "images",
+        adequacyTier: intakeSummary.adequacyTier ?? "interpretable",
+        confidenceTier: intakeSummary.adequacyTier ?? "interpretable",
+      };
+
       // ──── ATTACH SUPPLEMENTARY DATA ────
       const resultWithSupplementary = {
         ...finalResult,
+        reportMode,
+        reportLabel,
         additional_data_requested: additionalDataRequested.length
           ? additionalDataRequested
           : finalResult.additional_data_requested ?? [],
@@ -1319,9 +1564,11 @@ export async function POST(req: Request) {
         },
         intakeSummary: {
           studyAdequacy: intakeSummary.studyAdequacy,
+          adequacyTier: intakeSummary.adequacyTier,
           recommendedPipeline: intakeSummary.recommendedPipeline,
           uploadTypesPresent: intakeSummary.uploadTypesPresent,
           diagnosticImageCount: intakeSummary.diagnosticImageCount,
+          viewableImageCount: intakeSummary.viewableImageCount,
           localizerCount: intakeSummary.localizerCount,
           reportImageCount: intakeSummary.reportImageCount,
           hasMixedUpload: intakeSummary.hasMixedUpload,
@@ -1359,10 +1606,32 @@ export async function POST(req: Request) {
       }
 
       await sendEvent("result", { ...resultWithSupplementary, meta: successMeta });
+      logPhase("complete", { images: imagesToProcess.length, vertexOk: vertexViews.length, vertexFail: vertexErrors.length });
+      await sendEvent("trace", {
+        uploadId,
+        fileCount: preparedImages.length,
+        fileTypes: [...new Set(preparedImages.map(p => p.fileName.split(".").pop()?.toLowerCase() || "unknown"))],
+        selectedPipeline: tracePipeline,
+        selectedDomain: traceDomain,
+        startTime: new Date(phaseStart).toISOString(),
+        totalDurationMs: Date.now() - phaseStart,
+        checkpoints: traceCheckpoints,
+        errors: traceErrors,
+        finalStatus: "success",
+      });
       await sendEvent("done", { success: true });
 
     } catch (error) {
       const message = error instanceof Error ? error.message : "Unexpected server error";
+      logError("top-level", "UNHANDLED", message);
+      await sendEvent("trace", {
+        uploadId,
+        startTime: new Date(phaseStart).toISOString(),
+        totalDurationMs: Date.now() - phaseStart,
+        checkpoints: traceCheckpoints,
+        errors: traceErrors,
+        finalStatus: "error",
+      });
       await sendEvent("error", { message });
 
       const emergencyResult: FinalResponse = {

@@ -20,6 +20,10 @@ export type ReportStatus = "uploaded" | "processing" | "complete" | "failed";
 export interface ReportDoc {
   reportId: string;
   userId: string;
+  /** LOCALIZER_DETECTED when images were localizer-only; else DIAGNOSTIC. */
+  reportType?: "DIAGNOSTIC" | "LOCALIZER_DETECTED";
+  /** Standardized report mode (full interpretation, metadata-only, etc.). */
+  reportMode?: string;
   title: string;
   fileName: string;
   fileType: string;
@@ -53,6 +57,8 @@ function docToReport(data: Record<string, unknown>, id: string): ReportDoc {
   return {
     reportId: id,
     userId: (data.userId as string) ?? "",
+    reportType: (data.reportType as "DIAGNOSTIC" | "LOCALIZER_DETECTED") ?? (data.diagnosisResult as DiagnosisResult | undefined)?.reportType,
+    reportMode: ((data.reportMode as string) ?? (data.diagnosisResult as DiagnosisResult | undefined)?.reportMode) || undefined,
     title: (data.title as string) ?? "",
     fileName: (data.fileName as string) ?? "",
     fileType: (data.fileType as string) ?? "",
@@ -114,9 +120,15 @@ export async function createReport(
   return ref.id;
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
-    console.error("[ReportService] createReport Firestore write failed:", msg);
+    const code = (err as { code?: string })?.code;
+    console.error("[ReportService] createReport DENIED:", {
+      path: "reports/" + ref.id,
+      operation: "setDoc",
+      message: msg,
+      code: code ?? "unknown",
+    });
     if (msg.toLowerCase().includes("permission") || msg.toLowerCase().includes("insufficient")) {
-      console.error("[ReportService] Firestore permission error — ensure firestore.rules are deployed and userId matches request.auth.uid");
+      console.error("[ReportService] EXACT DENIED PATH: reports/ (create). UserId must match request.auth.uid. Deploy: firebase deploy --only firestore");
     }
     throw err;
   }
@@ -140,7 +152,13 @@ export async function updateReportStatus(
     await updateDoc(ref, update);
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
-    console.error("[ReportService] updateReportStatus failed:", msg);
+    const code = (err as { code?: string })?.code;
+    console.error("[ReportService] updateReportStatus DENIED:", {
+      path: "reports/" + reportId,
+      operation: "updateDoc",
+      message: msg,
+      code: code ?? "unknown",
+    });
     throw err;
   }
 }
@@ -158,6 +176,8 @@ export async function updateReportWithResults(
   await updateDoc(ref, {
     status: "complete" as ReportStatus,
     updatedAt: serverTimestamp(),
+    reportType: result.reportType ?? "DIAGNOSTIC",
+    reportMode: result.reportMode ?? undefined,
     modality: result.modality ?? "",
     anatomicalRegion: result.anatomical_region ?? "",
     concernLevel: result.concern_level ?? "",
@@ -175,7 +195,16 @@ export async function updateReportWithResults(
   }
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
-    console.error("[ReportService] markComplete Firestore update failed:", msg);
+    const code = (err as { code?: string })?.code;
+    console.error("[ReportService] markComplete DENIED:", {
+      path: "reports/" + reportId,
+      operation: "updateDoc",
+      message: msg,
+      code: code ?? "unknown",
+    });
+    if (msg.toLowerCase().includes("permission") || msg.toLowerCase().includes("insufficient")) {
+      console.error("[ReportService] EXACT DENIED PATH: reports/" + reportId + " (update). Rule: resource.data.userId == request.auth.uid");
+    }
     throw err;
   }
 }
@@ -220,9 +249,14 @@ export function subscribeToUserReports(
     (err: { code?: string; message?: string }) => {
       const code = err?.code ?? "unknown";
       const message = err?.message ?? "Firestore read failed";
-      console.error("[ReportService] Firestore read failed:", message);
+      console.error("[ReportService] subscribeToUserReports DENIED:", {
+        path: "reports (query where userId, orderBy updatedAt)",
+        operation: "onSnapshot",
+        message,
+        code,
+      });
       if (message?.toLowerCase().includes("permission") || message?.toLowerCase().includes("insufficient")) {
-        console.error("[ReportService] Permission denied. Deploy rules: firebase deploy --only firestore:rules");
+        console.error("[ReportService] EXACT DENIED PATH: reports collection query. Rule: resource.data.userId == request.auth.uid. Deploy: firebase deploy --only firestore");
       }
       if (message?.toLowerCase().includes("index")) {
         console.error("[ReportService] Composite index required. Deploy: firebase deploy --only firestore:indexes");

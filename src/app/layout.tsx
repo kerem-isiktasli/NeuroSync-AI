@@ -7,6 +7,7 @@ import { SettingsProvider } from "@/context/SettingsContext"
 import { BillingProvider } from "@/context/BillingContext"
 import { CreditsProvider } from "@/context/CreditsContext"
 import { ReportsProvider } from "@/context/ReportsContext"
+import { PatientProvider } from "@/context/PatientContext"
 import { DiagnosisProvider } from "@/features/diagnosis/context/DiagnosisContext"
 import { Toaster } from "@/components/ui/toaster"
 
@@ -30,10 +31,12 @@ export default function RootLayout({
           <BillingProvider>
             <CreditsProvider>
               <ReportsProvider>
-                <DiagnosisProvider>
-                  {children}
-                  <Toaster />
-                </DiagnosisProvider>
+                <PatientProvider>
+                  <DiagnosisProvider>
+                    {children}
+                    <Toaster />
+                  </DiagnosisProvider>
+                </PatientProvider>
               </ReportsProvider>
             </CreditsProvider>
           </BillingProvider>

@@ -20,6 +20,7 @@ import {
   Flag,
   Library,
   ListOrdered,
+  CheckCheck,
 } from "lucide-react";
 import { useDiagnosis } from "../context/DiagnosisContext";
 import { useSettings } from "@/context/SettingsContext";
@@ -32,6 +33,11 @@ import type {
   AdditionalDataRequest,
   LiteratureReference,
 } from "@/types/diagnosis";
+import {
+  getReportModeLabel,
+  getReportModeBadgeClass,
+  isLimitedReportMode,
+} from "@/lib/reportTypes";
 
 // ─── FONT LOADING ───────────────────────────────────────
 
@@ -238,6 +244,71 @@ function generatePdfDoc(data: DiagnosisResult, lang: "tr" | "en", fontB64: strin
     year: "numeric", month: "long", day: "numeric", hour: "2-digit", minute: "2-digit",
   });
 
+  // ── LOCALIZER_DETECTED: distinct PDF layout ──
+  if (data.reportType === "LOCALIZER_DETECTED" && data.localizerReport) {
+    const lr = data.localizerReport;
+    doc.setFontSize(18);
+    doc.setTextColor(20, 20, 20);
+    doc.text("RapiMed", pw / 2, y, { align: "center" });
+    y += 6;
+    doc.setFontSize(10);
+    doc.setTextColor(180, 120, 40);
+    doc.text(lang === "tr" ? "Lokalizör / Pozisyonlama Taraması" : "Localizer / Positioning Scan", pw / 2, y, { align: "center" });
+    y += 8;
+    doc.setDrawColor(180, 120, 40);
+    doc.setLineWidth(0.5);
+    doc.line(m, y, pw - m, y);
+    y += 8;
+
+    doc.setFontSize(8);
+    doc.setTextColor(90, 90, 90);
+    if (data.fileName) { doc.text(`${lang === "tr" ? "Dosya" : "File"}: ${data.fileName}`, m, y); y += 4; }
+    doc.text(`${lang === "tr" ? "Oluşturulma" : "Generated"}: ${now}`, m, y); y += 6;
+
+    y = pdfSectionTitle(doc, lang === "tr" ? "TESPİT EDİLEN" : "WHAT WAS DETECTED", m, y, pw, m);
+    y = pdfText(doc, lr.interpretation, m, y, cw, 10, { color: [30, 30, 30] });
+    y += 6;
+
+    y = ensurePage(doc, y, 15, ph, m);
+    y = pdfSectionTitle(doc, lang === "tr" ? "NEDEN TANISAL DEĞİL" : "WHY THIS IS NOT DIAGNOSTIC", m, y, pw, m);
+    y = pdfText(doc, lr.explanation, m, y, cw, 9);
+    y += 6;
+
+    y = ensurePage(doc, y, 15, ph, m);
+    y = pdfSectionTitle(doc, lang === "tr" ? "GÜVEN / TESPİT GÖSTERGELERİ" : "CONFIDENCE / DETECTED INDICATORS", m, y, pw, m);
+    doc.setFontSize(9);
+    doc.setTextColor(60, 60, 60);
+    doc.text(`${lang === "tr" ? "Güven" : "Confidence"}: ${Math.round((lr.confidence ?? 0) * 100)}%`, m, y); y += 5;
+    y = pdfBullets(doc, lr.detectedIndicators, m, y, cw, ph, m, 8.5);
+    y += 6;
+
+    y = ensurePage(doc, y, 20, ph, m);
+    doc.setFillColor(230, 250, 230);
+    doc.roundedRect(m, y, cw, 8, 1, 1, "F");
+    doc.setFontSize(9);
+    doc.setTextColor(40, 120, 60);
+    doc.text(lang === "tr" ? "TAM OLARAK NE YÜKLENMELİ" : "EXACT NEXT UPLOADS NEEDED", m + 4, y + 5.5);
+    y += 12;
+    doc.setTextColor(30, 30, 30);
+    y = pdfBullets(doc, lr.recommendation, m, y, cw, ph, m, 9);
+    y += 8;
+
+    doc.setFontSize(7.5);
+    doc.setTextColor(120, 120, 120);
+    const disc = data.medical_disclaimer || (lang === "tr" ? "Bu çıktı bilgilendirme amaçlıdır." : "This output is for informational purposes only.");
+    const discLines = doc.splitTextToSize(disc, cw);
+    doc.text(discLines, m, y);
+    y += discLines.length * 3.5 + 6;
+
+    for (let i = 1; i <= doc.getNumberOfPages(); i++) {
+      doc.setPage(i);
+      doc.setFontSize(7);
+      doc.setTextColor(150, 150, 150);
+      doc.text(`RapiMed — ${lang === "tr" ? "Lokalizör Tespit Raporu" : "Localizer Detection Report"} — ${now}`, pw / 2, ph - 10, { align: "center" });
+    }
+    return doc;
+  }
+
   const concern = getConcern(data.concern_level ?? data.severity);
   const concernLabel = lang === "tr" ? concern.labelTr : concern.label;
   const s = data.report_sections;
@@ -252,6 +323,13 @@ function generatePdfDoc(data: DiagnosisResult, lang: "tr" | "en", fontB64: strin
   doc.setTextColor(100, 100, 100);
   doc.text(lang === "tr" ? "Tıbbi Görüntü Yorumlama Raporu" : "AI Medical Image Interpretation Report", pw / 2, y, { align: "center" });
   y += 5;
+  if (data.reportMode) {
+    const reportTypeLabel = getReportModeLabel(data.reportMode, lang);
+    doc.setFontSize(8);
+    doc.setTextColor(120, 120, 120);
+    doc.text(`${lang === "tr" ? "Rapor Türü" : "Report Type"}: ${reportTypeLabel}`, pw / 2, y, { align: "center" });
+    y += 4;
+  }
   doc.setDrawColor(30, 30, 30);
   doc.setLineWidth(0.6);
   doc.line(m, y, pw - m, y);
@@ -290,6 +368,78 @@ function generatePdfDoc(data: DiagnosisResult, lang: "tr" | "en", fontB64: strin
     y += 6;
   }
 
+  // ── 5a. STUDY ADEQUACY ──
+  if (hasRich && s?.study_adequacy_summary) {
+    y = ensurePage(doc, y, 15, ph, m);
+    y = pdfSectionTitle(doc, lang === "tr" ? "ÇALIŞMA YETERLİLİĞİ" : "STUDY ADEQUACY", m, y, pw, m);
+    y = pdfText(doc, s.study_adequacy_summary, m, y, cw, 9);
+    y += 6;
+  }
+
+  // ── 5b. ANATOMICAL SPECIFICITY ──
+  if (hasRich && s?.anatomical_specificity_summary) {
+    y = ensurePage(doc, y, 15, ph, m);
+    y = pdfSectionTitle(doc, lang === "tr" ? "ANATOMİK SPESİFİKLİK" : "ANATOMICAL SPECIFICITY", m, y, pw, m);
+    y = pdfText(doc, s.anatomical_specificity_summary, m, y, cw, 9);
+    y += 6;
+  }
+
+  // ── 5c. EVIDENCE AGREEMENT ──
+  if (hasRich && s?.evidence_agreement_summary) {
+    y = ensurePage(doc, y, 15, ph, m);
+    y = pdfSectionTitle(doc, lang === "tr" ? "GÖRÜNTÜ UYUMU" : "EVIDENCE AGREEMENT", m, y, pw, m);
+    y = pdfText(doc, s.evidence_agreement_summary, m, y, cw, 9);
+    y += 6;
+  }
+
+  // ── 5d. AI VS OFFICIAL REPORT (FUSION) ──
+  const fusion = data.report_fusion;
+  if (fusion?.official_report_present) {
+    y = ensurePage(doc, y, 25, ph, m);
+    y = pdfSectionTitle(doc, lang === "tr" ? "AI İLE RESMİ RAPOR KARŞILAŞTIRMASI" : "AI VS OFFICIAL REPORT", m, y, pw, m);
+    if (fusion.agreement_points?.length) {
+      doc.setFontSize(9);
+      doc.setTextColor(40, 120, 80);
+      doc.text(lang === "tr" ? "Uyumlu bulgular:" : "Agreements:", m, y);
+      y += 4;
+      y = pdfBullets(doc, fusion.agreement_points, m, y, cw, ph, m, 8.5);
+      y += 2;
+    }
+    if (fusion.mismatch_points?.length) {
+      doc.setFontSize(9);
+      doc.setTextColor(180, 120, 40);
+      doc.text(lang === "tr" ? "Farklılıklar:" : "Disagreements:", m, y);
+      y += 4;
+      for (const mm of fusion.mismatch_points) {
+        y = ensurePage(doc, y, 12, ph, m);
+        doc.setFontSize(8);
+        doc.setTextColor(80, 80, 80);
+        const line = `${lang === "tr" ? "AI:" : "AI:"} ${mm.image_finding} | ${lang === "tr" ? "Rapor:" : "Report:"} ${mm.report_finding}`;
+        const lines = doc.splitTextToSize(`\u2022 ${line}`, cw - 4);
+        doc.text(lines, m + 2, y);
+        y += lines.length * 3.5 + 1;
+        if (mm.note) {
+          const noteLines = doc.splitTextToSize(`  ${mm.note}`, cw - 6);
+          doc.text(noteLines, m + 4, y);
+          y += noteLines.length * 3.5 + 2;
+        }
+      }
+      y += 2;
+    }
+    if (fusion.official_report_priority_note) {
+      y = ensurePage(doc, y, 15, ph, m);
+      doc.setFillColor(255, 248, 220);
+      doc.roundedRect(m, y, cw, 12, 1, 1, "F");
+      doc.setFontSize(8);
+      doc.setTextColor(140, 100, 40);
+      const prioLines = doc.splitTextToSize(`${lang === "tr" ? "Önemli:" : "Important:"} ${fusion.official_report_priority_note}`, cw - 8);
+      doc.text(prioLines, m + 4, y + 4);
+      y += 14;
+    }
+    doc.setTextColor(60, 60, 60);
+    y += 6;
+  }
+
   // ── 6. DETAILED FINDINGS ──
   const findings = hasRich && s?.detailed_findings?.length ? s.detailed_findings
     : data.key_findings?.length ? data.key_findings
@@ -301,12 +451,31 @@ function generatePdfDoc(data: DiagnosisResult, lang: "tr" | "en", fontB64: strin
     y += 4;
   }
 
+  // ── 6a. FINDINGS BY LEVEL ──
+  if (hasRich && s?.findings_by_level_summary) {
+    y = ensurePage(doc, y, 15, ph, m);
+    y = pdfSectionTitle(doc, lang === "tr" ? "SEVİYE BAZLI BULGULAR" : "FINDINGS BY LEVEL", m, y, pw, m);
+    y = pdfText(doc, s.findings_by_level_summary, m, y, cw, 9);
+    y += 6;
+  }
+
   // ── 7. INTERPRETIVE IMPRESSION ──
   if (hasRich && s?.interpretive_impression) {
     y = ensurePage(doc, y, 15, ph, m);
     y = pdfSectionTitle(doc, lang === "tr" ? "YORUMLAYICI İZLENİM" : "INTERPRETIVE IMPRESSION", m, y, pw, m);
     y = pdfText(doc, s.interpretive_impression, m, y, cw, 9);
     y += 6;
+  }
+
+  // ── 7a. WHAT CANNOT BE DETERMINED ──
+  if (hasRich && s?.what_cannot_be_determined?.length) {
+    y = ensurePage(doc, y, 15, ph, m);
+    y = pdfSectionTitle(doc, lang === "tr" ? "BELİRLENEMEYENLER" : "WHAT CANNOT BE DETERMINED", m, y, pw, m);
+    doc.setFontSize(8.5);
+    doc.setTextColor(100, 100, 100);
+    y = pdfBullets(doc, s.what_cannot_be_determined, m, y, cw, ph, m, 8.5);
+    doc.setTextColor(60, 60, 60);
+    y += 4;
   }
 
   // ── 8. DIFFERENTIAL CONSIDERATIONS ──
@@ -570,12 +739,69 @@ export default function AIReport() {
   return (
     <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="h-full flex flex-col px-2 py-3 md:px-4 md:py-4">
 
+      {/* ── REPORT TYPE BANNER (truthful analysis depth) ── */}
+      {(data.reportMode || data.reportLabel) && (
+        <div
+          className={`mb-4 p-4 rounded-xl border ${isLimitedReportMode(data.reportMode) ? "border-amber-500/30 bg-amber-500/5" : "border-theme-border bg-theme-surface"}`}
+        >
+          <div className="flex items-center gap-2 mb-2">
+            <span className={`px-2.5 py-1 rounded-lg text-xs font-semibold ${getReportModeBadgeClass(data.reportMode)}`}>
+              {getReportModeLabel(data.reportMode, language as "tr" | "en")}
+            </span>
+            {data.reportLabel?.analyzedFileCount != null && (
+              <span className="text-xs text-theme-text-muted">
+                {data.reportLabel.displayUnit === "slices"
+                  ? `${data.reportLabel.analyzedFileCount} ${language === "tr" ? "dosya" : "files"} · ${data.reportLabel.analyzedSliceCount ?? data.reportLabel.analyzedFileCount} ${language === "tr" ? "kesit" : "slices"}`
+                  : `${data.reportLabel.analyzedFileCount} ${language === "tr" ? "görüntü" : "images"}`}
+              </span>
+            )}
+            {data.reportLabel?.adequacyTier && (
+              <span className="text-xs text-theme-text-muted">
+                · {language === "tr" ? "Yeterlilik" : "Adequacy"}: {data.reportLabel.adequacyTier}
+              </span>
+            )}
+          </div>
+          {data.reportLabel && (data.reportLabel.whatWasActuallyAnalyzed.length > 0 || data.reportLabel.whatCouldNotBeDetermined.length > 0) && (
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-3 text-xs mt-2">
+              {data.reportLabel.whatWasActuallyAnalyzed.length > 0 && (
+                <div>
+                  <p className="font-medium text-theme-text-secondary mb-0.5">{language === "tr" ? "Analiz edilen:" : "What was analyzed:"}</p>
+                  <ul className="list-disc list-inside text-theme-text-muted space-y-0.5">
+                    {data.reportLabel.whatWasActuallyAnalyzed.slice(0, 3).map((a, i) => (
+                      <li key={i}>{a}</li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+              {data.reportLabel.whatCouldNotBeDetermined.length > 0 && (
+                <div>
+                  <p className="font-medium text-theme-text-secondary mb-0.5">{language === "tr" ? "Belirlenemedi:" : "Could not be determined:"}</p>
+                  <ul className="list-disc list-inside text-theme-text-muted space-y-0.5">
+                    {data.reportLabel.whatCouldNotBeDetermined.slice(0, 3).map((c, i) => (
+                      <li key={i}>{c}</li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+      )}
+
       {/* ── HEADER ── */}
       <div className="flex justify-between items-start gap-4 mb-5 pb-4 border-b border-theme-border">
         <div className="min-w-0">
           <h3 className="text-h2 flex items-center gap-2 flex-wrap">
-            <Activity className="text-theme-accent shrink-0" />
-            <span className="text-theme-text-primary">RapiMed Report</span>
+            {data.reportType === "LOCALIZER_DETECTED" ? (
+              <FileQuestion className="text-amber-500 shrink-0" />
+            ) : (
+              <Activity className="text-theme-accent shrink-0" />
+            )}
+            <span className="text-theme-text-primary">
+              {data.reportType === "LOCALIZER_DETECTED"
+                ? (language === "tr" ? "Lokalizör / Pozisyonlama Taraması" : "Localizer / Positioning Scan")
+                : "RapiMed Report"}
+            </span>
           </h3>
           <div className="flex flex-wrap gap-x-4 gap-y-0.5 mt-1.5 text-caption">
             <span>{new Date(data.timestamp).toLocaleDateString()}</span>
@@ -594,7 +820,65 @@ export default function AIReport() {
       <div className="flex-1 overflow-y-auto">
         <div className="max-w-3xl mx-auto pr-2 space-y-4 scrollbar-hide pb-4">
 
-          {/* Summary */}
+          {/* LOCALIZER_DETECTED: distinct report style — not a normal interpretation */}
+          {data.reportType === "LOCALIZER_DETECTED" && data.localizerReport ? (
+            <div className="space-y-5">
+              <div className="rounded-xl border-2 border-amber-500/30 bg-amber-500/5 p-5">
+                <h4 className="text-label uppercase tracking-wide text-amber-500/90 mb-3">
+                  {language === "tr" ? "Tespit Edilen" : "What Was Detected"}
+                </h4>
+                <p className="text-theme-text-primary font-medium">{data.localizerReport.interpretation}</p>
+              </div>
+              <div className="rounded-xl border border-theme-border bg-theme-surface/50 p-5">
+                <h4 className="text-label uppercase tracking-wide text-theme-text-muted mb-3">
+                  {language === "tr" ? "Neden Tanısal Değil" : "Why This Is Not Diagnostic"}
+                </h4>
+                <p className="text-theme-text-secondary text-sm">{data.localizerReport.explanation}</p>
+              </div>
+              <div className="rounded-xl border border-theme-border bg-theme-surface/50 p-5">
+                <h4 className="text-label uppercase tracking-wide text-theme-text-muted mb-3">
+                  {language === "tr" ? "Güven / Tespit Göstergeleri" : "Confidence / Detected Indicators"}
+                </h4>
+                <p className="text-theme-text-secondary text-sm mb-2">
+                  {language === "tr" ? "Güven:" : "Confidence:"} {Math.round((data.localizerReport.confidence ?? 0) * 100)}%
+                </p>
+                <ul className="list-disc list-inside text-sm text-theme-text-secondary space-y-0.5">
+                  {data.localizerReport.detectedIndicators.map((ind, i) => (
+                    <li key={i}>{ind}</li>
+                  ))}
+                </ul>
+              </div>
+              <div className="rounded-xl border border-emerald-500/20 bg-emerald-500/5 p-5">
+                <h4 className="text-label uppercase tracking-wide text-emerald-500/90 mb-3">
+                  {language === "tr" ? "Tam Olarak Ne Yüklenmeli" : "Exact Next Uploads Needed"}
+                </h4>
+                <ul className="list-disc list-inside text-sm text-theme-text-primary space-y-1">
+                  {data.localizerReport.recommendation.map((rec, i) => (
+                    <li key={i}>{rec}</li>
+                  ))}
+                </ul>
+              </div>
+              <p className="text-caption text-theme-text-muted italic">
+                {data.medical_disclaimer || (language === "tr" ? "Bu çıktı bilgilendirme amaçlıdır." : "This output is for informational purposes only.")}
+              </p>
+            </div>
+          ) : data.reportType === "LOCALIZER_DETECTED" ? (
+            /* Fallback when localizerReport missing */
+            <div className="rounded-xl border-2 border-amber-500/30 bg-amber-500/10 p-5">
+              <p className="font-semibold text-theme-text-primary mb-2">
+                {language === "tr" ? "Yüklenen görüntüler MRI/CT lokalizör taramaları gibi görünüyor." : "Uploaded images appear to be MRI/CT localizer scans."}
+              </p>
+              <p className="text-theme-text-secondary text-sm mb-3">
+                {language === "tr" ? "Lokalizörler pozisyon taramalarıdır; tanısal detay içermez." : "Localizers are positioning scans and do not contain diagnostic detail."}
+              </p>
+              <p className="text-sm text-theme-text-primary">
+                {language === "tr" ? "Lütfen sagittal, aksiyel veya koronal kesitler ya da tam DICOM çalışması yükleyin." : "Please upload sagittal, axial, or coronal slices or the full DICOM study."}
+              </p>
+            </div>
+          ) : null}
+
+          {/* Summary (only for diagnostic reports) */}
+          {data.reportType !== "LOCALIZER_DETECTED" && (
           <div className="mb-2">
             <label className="text-label mb-2 block text-theme-text-muted text-xs uppercase tracking-wide">
               {language === "tr" ? "Özet" : "Summary"}
@@ -608,9 +892,10 @@ export default function AIReport() {
               </div>
             )}
           </div>
+          )}
 
-          {/* Upload Assessment (intake summary) */}
-          {data.intake_summary && (data.intake_summary.localizerCount ?? 0) + (data.intake_summary.reportImageCount ?? 0) + (data.intake_summary.hasMixedUpload ? 1 : 0) > 0 && (
+          {/* Upload Assessment (intake summary) - only for diagnostic */}
+          {data.reportType !== "LOCALIZER_DETECTED" && data.intake_summary && (data.intake_summary.localizerCount ?? 0) + (data.intake_summary.reportImageCount ?? 0) + (data.intake_summary.hasMixedUpload ? 1 : 0) > 0 && (
             <div className="rounded-xl border border-amber-500/20 bg-amber-500/5 p-4 flex gap-3">
               <Info className="w-5 h-5 shrink-0 text-amber-500/80 mt-0.5" />
               <div className="text-sm text-theme-text-secondary">
@@ -620,9 +905,13 @@ export default function AIReport() {
                 <ul className="space-y-0.5 text-xs">
                   {data.intake_summary.reportImageCount && data.intake_summary.reportImageCount > 0 && (
                     <li>
-                      {language === "tr"
-                        ? `Rapor ekran görüntüsü tespit edildi (${data.intake_summary.reportImageCount}); metin çıkarılamadı.`
-                        : `Report screenshot(s) detected (${data.intake_summary.reportImageCount}); text could not be extracted.`}
+                      {data.intake_summary.officialReportOcrUsed || data.report_fusion?.official_report_present
+                        ? (language === "tr"
+                          ? `Rapor ekran görüntüsü tespit edildi (${data.intake_summary.reportImageCount}); metin başarıyla çıkarıldı.`
+                          : `Report screenshot(s) detected (${data.intake_summary.reportImageCount}); text was extracted.`)
+                        : (language === "tr"
+                          ? `Rapor ekran görüntüsü tespit edildi (${data.intake_summary.reportImageCount}); metin çıkarılamadı.`
+                          : `Report screenshot(s) detected (${data.intake_summary.reportImageCount}); text could not be extracted.`)}
                     </li>
                   )}
                   {data.intake_summary.localizerCount && data.intake_summary.localizerCount > 0 && (
@@ -654,6 +943,9 @@ export default function AIReport() {
             </div>
           )}
 
+          {/* Diagnostic sections (hidden for LOCALIZER_DETECTED) */}
+          {data.reportType !== "LOCALIZER_DETECTED" && (
+          <>
           {/* Red Flags (top priority) */}
           {(data.red_flags?.length ?? 0) > 0 && (
             <Section icon={Flag} title={language === "tr" ? "Kırmızı Bayraklar" : "Red Flags"} accent="red">
@@ -682,6 +974,65 @@ export default function AIReport() {
             </Section>
           )}
 
+          {/* Study Adequacy Summary */}
+          {hasRich && richSections?.study_adequacy_summary && (
+            <Section icon={Gauge} title={language === "tr" ? "Çalışma Yeterliliği" : "Study Adequacy"} defaultOpen={true}>
+              <p>{richSections.study_adequacy_summary}</p>
+            </Section>
+          )}
+
+          {/* Anatomical Specificity Summary */}
+          {hasRich && richSections?.anatomical_specificity_summary && (
+            <Section icon={ClipboardList} title={language === "tr" ? "Anatomik Spesifiklik" : "Anatomical Specificity"} defaultOpen={true}>
+              <p>{richSections.anatomical_specificity_summary}</p>
+            </Section>
+          )}
+
+          {/* Evidence Agreement Summary */}
+          {hasRich && richSections?.evidence_agreement_summary && (
+            <Section icon={Info} title={language === "tr" ? "Görüntü Uyumu" : "Evidence Agreement"} defaultOpen={true}>
+              <p>{richSections.evidence_agreement_summary}</p>
+            </Section>
+          )}
+
+          {/* AI vs Official Report (Fusion) */}
+          {data.report_fusion?.official_report_present && (
+            <Section icon={CheckCheck} title={language === "tr" ? "AI ile Resmi Rapor Karşılaştırması" : "AI vs Official Report"} defaultOpen={true}>
+              {data.report_fusion.agreement_points?.length > 0 && (
+                <div className="mb-3">
+                  <p className="text-xs font-semibold text-emerald-400 mb-1">
+                    {language === "tr" ? "Uyumlu bulgular" : "Agreements"}
+                  </p>
+                  <BulletList items={data.report_fusion.agreement_points} />
+                </div>
+              )}
+              {data.report_fusion.mismatch_points?.length > 0 && (
+                <div className="mb-3">
+                  <p className="text-xs font-semibold text-amber-400 mb-1">
+                    {language === "tr" ? "Farklılıklar" : "Disagreements"}
+                  </p>
+                  <ul className="space-y-1.5 ml-1">
+                    {data.report_fusion.mismatch_points.map((m, i) => (
+                      <li key={i} className="text-sm">
+                        <span className="text-theme-text-muted">{language === "tr" ? "AI:" : "AI:"}</span> {m.image_finding}
+                        {" | "}
+                        <span className="text-theme-text-muted">{language === "tr" ? "Rapor:" : "Report:"}</span> {m.report_finding}
+                        {m.note && <span className="block text-xs text-theme-text-muted mt-0.5">— {m.note}</span>}
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+              {data.report_fusion.official_report_priority_note && (
+                <div className="p-3 rounded-lg bg-amber-500/10 border border-amber-500/20 text-sm">
+                  <span className="font-semibold text-amber-400">
+                    {language === "tr" ? "Önemli:" : "Important:"}
+                  </span> {data.report_fusion.official_report_priority_note}
+                </div>
+              )}
+            </Section>
+          )}
+
           {/* Findings */}
           {detailedFindings.length > 0 && (
             <Section icon={Stethoscope} title={language === "tr" ? "Bulgular" : "Findings"}>
@@ -689,10 +1040,24 @@ export default function AIReport() {
             </Section>
           )}
 
+          {/* Findings by Level Summary */}
+          {hasRich && richSections?.findings_by_level_summary && (
+            <Section icon={ListOrdered} title={language === "tr" ? "Seviye Bazlı Bulgular" : "Findings by Level"} defaultOpen={true}>
+              <p>{richSections.findings_by_level_summary}</p>
+            </Section>
+          )}
+
           {/* Interpretive Impression */}
           {hasRich && richSections?.interpretive_impression && (
             <Section icon={BookOpen} title={language === "tr" ? "Yorumlayıcı İzlenim" : "Interpretive Impression"}>
               <p>{richSections.interpretive_impression}</p>
+            </Section>
+          )}
+
+          {/* What Cannot Be Determined */}
+          {hasRich && (richSections?.what_cannot_be_determined?.length ?? 0) > 0 && (
+            <Section icon={FileQuestion} title={language === "tr" ? "Belirlenemeyenler" : "What Cannot Be Determined"} defaultOpen={true}>
+              <BulletList items={richSections!.what_cannot_be_determined!} />
             </Section>
           )}
 
@@ -841,6 +1206,8 @@ export default function AIReport() {
                 ))}
               </div>
             </div>
+          )}
+          </>
           )}
         </div>
       </div>

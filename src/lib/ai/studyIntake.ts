@@ -13,6 +13,9 @@ export type StudyIntakeAdequacy =
   | "mixed"
   | "non-diagnostic";
 
+/** 4-tier triage: unusable → refuse; limited → LIMITED_INTERPRETATION; interpretable/strong → full report */
+export type AdequacyTier = "unusable" | "limited" | "interpretable" | "strong";
+
 export type RecommendedPipeline =
   | "image-analysis"
   | "report-ocr"
@@ -23,6 +26,7 @@ export interface StudyIntakeSummary {
   imageCount: number;
   uploadTypesPresent: UploadType[];
   diagnosticImageCount: number;
+  viewableImageCount: number;
   localizerCount: number;
   reportImageCount: number;
   viewerScreenshotCount: number;
@@ -31,9 +35,12 @@ export interface StudyIntakeSummary {
   hasMixedUpload: boolean;
   likelySingleStudy: boolean;
   studyAdequacy: StudyIntakeAdequacy;
+  adequacyTier: AdequacyTier;
   recommendedPipeline: RecommendedPipeline;
   perImageIntake: PerImageIntakeResult[];
 }
+
+const DIAGNOSTIC_VALUE_OK = new Set(["high", "medium", "low"]);
 
 /**
  * Indices of images suitable for image-analysis pipeline (diagnostic-images,
@@ -44,9 +51,30 @@ export function getDiagnosticImageIndices(perImage: PerImageIntakeResult[]): num
     .filter(
       (p) =>
         p.upload_type === "diagnostic-image" &&
-        p.diagnostic_value !== "none" &&
+        DIAGNOSTIC_VALUE_OK.has(p.diagnostic_value) &&
         !p.contains_report_text
     )
+    .map((p) => p.imageIndex);
+}
+
+/**
+ * Indices of images that are reasonably viewable for interpretation.
+ * Broad: prefer limited interpretation over refusal.
+ * Only excludes pure localizers and pure report-text screenshots.
+ */
+export function getViewableImageIndices(perImage: PerImageIntakeResult[]): number[] {
+  return perImage
+    .filter((p) => {
+      if (p.upload_type === "localizer") return false;
+      if (p.upload_type === "report-image") return false;
+      if (p.contains_report_text && p.upload_type !== "diagnostic-image" && p.upload_type !== "viewer-screenshot") return false;
+      // Accept anything with any diagnostic value
+      if (DIAGNOSTIC_VALUE_OK.has(p.diagnostic_value)) return true;
+      // Accept unknowns and non-diagnostics — let Vertex decide during extraction
+      if (p.upload_type === "unknown" || p.upload_type === "non-diagnostic") return true;
+      if (p.upload_type === "viewer-screenshot") return true;
+      return false;
+    })
     .map((p) => p.imageIndex);
 }
 
@@ -76,7 +104,7 @@ export function buildStudyIntakeSummary(
 
   const diagnosticImageCount = perImageIntake.filter(
     (p) =>
-      p.upload_type === "diagnostic-image" &&
+      (p.upload_type === "diagnostic-image" || p.upload_type === "viewer-screenshot") &&
       (p.diagnostic_value === "high" || p.diagnostic_value === "medium" || p.diagnostic_value === "low")
   ).length;
 
@@ -90,12 +118,11 @@ export function buildStudyIntakeSummary(
     (p) => p.upload_type === "viewer-screenshot"
   ).length;
 
-  const lowQualityCount = perImageIntake.filter(
-    (p) =>
-      p.upload_type === "non-diagnostic" ||
-      p.diagnostic_value === "none" ||
-      p.upload_type === "unknown"
-  ).length;
+  const lowQualityCount = perImageIntake.filter((p) => {
+    if (p.upload_type === "non-diagnostic" || p.diagnostic_value === "none") return true;
+    if (p.upload_type === "unknown" && p.confidence < 5) return true;
+    return false;
+  }).length;
 
   const planesAvailable = [
     ...new Set(
@@ -124,17 +151,28 @@ export function buildStudyIntakeSummary(
     hasMixedUpload
   );
 
-  const recommendedPipeline = deriveRecommendedPipeline(
+  const viewableImageCount = getViewableImageIndices(perImageIntake).length;
+  const adequacyTier = deriveAdequacyTier(
     studyAdequacy,
     diagnosticImageCount,
+    viewableImageCount,
+    imageCount,
+    lowQualityCount
+  );
+  const recommendedPipeline = deriveRecommendedPipeline(
+    studyAdequacy,
+    adequacyTier,
+    diagnosticImageCount,
     reportImageCount,
-    hasMixedUpload
+    hasMixedUpload,
+    viewableImageCount
   );
 
   return {
     imageCount,
     uploadTypesPresent,
     diagnosticImageCount,
+    viewableImageCount,
     localizerCount,
     reportImageCount,
     viewerScreenshotCount,
@@ -143,10 +181,40 @@ export function buildStudyIntakeSummary(
     hasMixedUpload,
     likelySingleStudy,
     studyAdequacy,
+    adequacyTier,
     recommendedPipeline,
     perImageIntake,
   };
 }
+
+function deriveAdequacyTier(
+  adequacy: StudyIntakeAdequacy,
+  diagnosticCount: number,
+  viewableCount: number,
+  total: number,
+  lowQualityCount: number
+): AdequacyTier {
+  if (total === 0) return "unusable";
+  if (adequacy === "report-only" && diagnosticCount === 0) return "unusable";
+  if (adequacy === "localizer-only" && viewableCount === 0) return "unusable";
+
+  // Even if intake classified as "non-diagnostic", give images a chance —
+  // intake can misclassify usable screenshots. Only truly empty → unusable.
+  if (adequacy === "non-diagnostic" && viewableCount === 0 && diagnosticCount === 0) {
+    // Still try if there are images: return "limited" so pipeline runs
+    return total > 0 ? "limited" : "unusable";
+  }
+
+  if (viewableCount >= 1 && diagnosticCount >= 2 && lowQualityCount <= total * 0.2) {
+    return "strong";
+  }
+  if (diagnosticCount >= 1 || viewableCount >= 2) return "interpretable";
+  if (viewableCount >= 1) return "limited";
+
+  // Fallback: if there are any images at all, try limited analysis
+  return total > 0 ? "limited" : "unusable";
+}
+
 
 function deriveStudyAdequacy(
   total: number,
@@ -159,8 +227,8 @@ function deriveStudyAdequacy(
   if (total === 0) return "non-diagnostic";
 
   if (report >= total * 0.8 && diagnostic === 0) return "report-only";
-  if (localizer >= total * 0.8 && diagnostic === 0) return "localizer-only";
-  if (lowQuality >= total * 0.8) return "non-diagnostic";
+  if (localizer >= total * 0.95 && diagnostic === 0) return "localizer-only";
+  if (lowQuality >= total * 0.95) return "non-diagnostic";
 
   if (hasMixed && diagnostic > 0 && report > 0) return "mixed";
 
@@ -172,18 +240,20 @@ function deriveStudyAdequacy(
 
 function deriveRecommendedPipeline(
   adequacy: StudyIntakeAdequacy,
+  tier: AdequacyTier,
   diagnosticCount: number,
   reportCount: number,
-  hasMixed: boolean
+  _hasMixed: boolean,
+  viewableCount: number
 ): RecommendedPipeline {
   if (adequacy === "report-only") return "report-ocr";
-  if (adequacy === "mixed" && diagnosticCount > 0 && reportCount > 0) return "fusion";
 
-  if (diagnosticCount >= 1) return "image-analysis";
+  // Temporarily disabled: fusion pipeline (stability)
+  // if (adequacy === "mixed" && diagnosticCount > 0 && reportCount > 0) return "fusion";
 
-  if (adequacy === "localizer-only" || adequacy === "non-diagnostic") {
-    return "insufficient-data";
-  }
+  // Only return insufficient-data when truly unusable AND no images at all
+  if (tier === "unusable" && diagnosticCount === 0 && viewableCount === 0) return "insufficient-data";
 
+  // Default: always try image-analysis if there are any images
   return "image-analysis";
 }

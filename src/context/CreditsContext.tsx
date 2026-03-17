@@ -30,6 +30,8 @@ interface CreditsContextType {
   deductForAnalysis: () => void;
   deductForChat: () => void;
   refreshFromStorage: () => void;
+  /** Dev only: grant credits for testing. */
+  grantCreditsForTesting?: (amount: number) => void;
 }
 
 const CreditsContext = createContext<CreditsContextType | undefined>(undefined);
@@ -96,13 +98,18 @@ export function CreditsProvider({ children }: { children: ReactNode }) {
     });
   }, []);
 
-  const [isDemoMode, setIsDemoMode] = useState(false);
-  useEffect(() => {
-    setIsDemoMode(typeof window !== "undefined" ? !!localStorage.getItem("neurosync_demo_mode") : false);
-  }, []);
+  const canAnalyze = credits >= ANALYSIS_COST;
+  const canChat = credits >= CHAT_COST;
 
-  const canAnalyze = isDemoMode || credits >= ANALYSIS_COST;
-  const canChat = isDemoMode || credits >= CHAT_COST;
+  const grantCreditsForTesting = useCallback((amount: number) => {
+    if (process.env.NODE_ENV !== "production") {
+      setCredits(Math.max(0, Math.floor(amount)));
+      if (typeof window !== "undefined") {
+        localStorage.setItem(STORAGE_KEY, JSON.stringify(Math.max(0, Math.floor(amount))));
+      }
+      console.log(`[Credits] Granted ${amount} for testing`);
+    }
+  }, []);
 
   const value = useMemo(
     () => ({
@@ -112,8 +119,9 @@ export function CreditsProvider({ children }: { children: ReactNode }) {
       deductForAnalysis,
       deductForChat,
       refreshFromStorage,
+      grantCreditsForTesting: process.env.NODE_ENV !== "production" ? grantCreditsForTesting : undefined,
     }),
-    [credits, canAnalyze, canChat, deductForAnalysis, deductForChat, refreshFromStorage]
+    [credits, canAnalyze, canChat, deductForAnalysis, deductForChat, refreshFromStorage, grantCreditsForTesting]
   );
 
   return (

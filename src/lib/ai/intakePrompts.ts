@@ -39,8 +39,8 @@ SINIFLANDIR:
    - "localizer": Lokalizör/scout/planlama görüntüsü (numaralı çizgiler, küçük önizleme, asıl kesit değil)
    - "viewer-screenshot": PACS/DICOM görüntüleyici ekran görüntüsü (üstte araç çubuğu, yan pencereler, menüler)
    - "report-image": Yazılı tıbbi raporun ekran görüntüsü veya fotoğrafı (metin ağırlıklı, rapor formatı)
-   - "non-diagnostic": Düşük kalite, bulanık, okunamaz veya tanısal değeri olmayan görüntü
-   - "unknown": Belirlenemiyor
+   - "non-diagnostic": SADECE gerçekten kullanılamaz: bozuk, aşırı bulanık, anatomisi hiç görünmüyor. Şüphe durumunda "diagnostic-image" veya "unknown" + diagnostic_value "low" tercih et.
+   - "unknown": Belirsizse bunu kullan; yine de diagnostic_value (high/medium/low) ver
 
 2. modality_guess: MRI, CT, X-Ray, US, Photo vb. (kısa tahmin)
 
@@ -81,8 +81,8 @@ CLASSIFY:
    - "localizer": Localizer/scout/planning image (numbered reference lines, small preview, not the main diagnostic slice)
    - "viewer-screenshot": PACS/DICOM viewer screenshot (toolbar on top, side panels, menus visible)
    - "report-image": Screenshot or photo of a written medical report (text-heavy, report format)
-   - "non-diagnostic": Low quality, blurry, unreadable, or no diagnostic value
-   - "unknown": Cannot be determined
+   - "non-diagnostic": ONLY when truly unusable: corrupted, severely blurry, no anatomy visible. When uncertain, prefer "diagnostic-image" or "unknown" with diagnostic_value "low".
+   - "unknown": Use when uncertain; still provide diagnostic_value (high/medium/low) if any anatomy is visible
 
 2. modality_guess: MRI, CT, X-Ray, US, Photo etc. (brief guess)
 
@@ -132,6 +132,7 @@ export function resolveUploadType(raw?: string): UploadType {
     return "report-image";
   if (v.includes("localiz") || v.includes("scout") || v.includes("planning"))
     return "localizer";
+  if (v.includes("uncertain") || v.includes("unclear")) return "unknown";
   if (v.includes("viewer") || v.includes("screenshot") || v.includes("pacs"))
     return "viewer-screenshot";
   if (v.includes("diagnostic") || v.includes("image")) return "diagnostic-image";

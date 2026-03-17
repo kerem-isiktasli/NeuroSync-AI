@@ -5,6 +5,7 @@ import { useSettings } from "@/context/SettingsContext";
 import { useReports } from "@/context/ReportsContext";
 import { useCredits } from "@/context/CreditsContext";
 import { useDiagnosis } from "@/features/diagnosis/context/DiagnosisContext";
+import { usePatient } from "@/context/PatientContext";
 import { useToast } from "@/hooks/use-toast";
 import { ToastAction } from "@/components/ui/toast";
 import {
@@ -69,14 +70,12 @@ function buildReportContextPacket(
   userQuestion: string
 ): import("@/app/api/report-chat/route").ReportContextPacket {
   const dr = report?.diagnosisResult ?? result;
+  const rs = dr?.report_sections;
   const keyFindings = report?.keyFindings ?? result?.key_findings ?? [];
   const detailedFindings =
-    dr?.report_sections?.detailed_findings ??
-    (Array.isArray(keyFindings) ? keyFindings : []);
-  const interpretiveImpression =
-    dr?.report_sections?.interpretive_impression ?? "";
-  const limitations =
-    dr?.report_sections?.limitations ?? [];
+    rs?.detailed_findings ?? (Array.isArray(keyFindings) ? keyFindings : []);
+  const interpretiveImpression = rs?.interpretive_impression ?? "";
+  const limitations = rs?.limitations ?? [];
   const additionalDataRequested =
     dr?.additional_data_requested?.map((a) => ({
       item: a.item,
@@ -85,20 +84,39 @@ function buildReportContextPacket(
     })) ?? [];
 
   return {
+    reportType: dr?.reportType,
+    reportMode: dr?.reportMode,
+    reportLabel: dr?.reportLabel,
+    localizerReport: dr?.localizerReport,
     fileName: report?.fileName ?? result?.fileName ?? "",
-    modality: report?.modality ?? result?.modality ?? "",
-    anatomicalRegion: report?.anatomicalRegion ?? result?.anatomical_region ?? "",
-    concernLevel: report?.concernLevel ?? result?.concern_level ?? "moderate",
-    summary: report?.summary ?? result?.diagnosis ?? "",
-    keyFindings: Array.isArray(keyFindings) ? keyFindings : [String(keyFindings)],
+    modality: report?.modality ?? result?.modality ?? dr?.modality ?? "",
+    anatomicalRegion: report?.anatomicalRegion ?? result?.anatomical_region ?? dr?.anatomical_region ?? "",
+    concernLevel: report?.concernLevel ?? result?.concern_level ?? dr?.concern_level ?? "moderate",
+    summary: report?.summary ?? result?.diagnosis ?? dr?.diagnosis ?? "",
+    keyFindings: Array.isArray(keyFindings) ? keyFindings : [String(keyFindings ?? "")],
     detailedFindings: Array.isArray(detailedFindings) ? detailedFindings : [],
     interpretiveImpression: interpretiveImpression ?? "",
     limitations: Array.isArray(limitations) ? limitations : [],
     additionalDataRequested,
-    questionsForDoctor: report?.questionsForDoctor ?? result?.questions_for_doctor ?? [],
-    followUpConsiderations: report?.followUpConsiderations ?? result?.follow_up_considerations ?? [],
-    medicalDisclaimer: report?.medicalDisclaimer ?? result?.medical_disclaimer ?? "",
+    questionsForDoctor: report?.questionsForDoctor ?? result?.questions_for_doctor ?? dr?.questions_for_doctor ?? [],
+    followUpConsiderations: report?.followUpConsiderations ?? result?.follow_up_considerations ?? dr?.follow_up_considerations ?? [],
+    medicalDisclaimer: report?.medicalDisclaimer ?? result?.medical_disclaimer ?? dr?.medical_disclaimer ?? "",
     userQuestion,
+    officialReportText: dr?.report_fusion?.report_text_summary,
+    reportFusion: dr?.report_fusion,
+    examOverview: rs?.exam_overview,
+    technicalSummary: rs?.technical_summary,
+    studyAdequacySummary: rs?.study_adequacy_summary,
+    anatomicalSpecificitySummary: rs?.anatomical_specificity_summary,
+    findingsByLevelSummary: rs?.findings_by_level_summary,
+    whatCannotBeDetermined: rs?.what_cannot_be_determined,
+    evidenceAgreementSummary: rs?.evidence_agreement_summary,
+    differentialConsiderations: dr?.differential_considerations,
+    redFlags: dr?.red_flags,
+    importantTerms: report?.importantTerms ?? result?.important_terms ?? dr?.important_terms,
+    nextSteps: rs?.next_steps,
+    confidenceLevel: dr?.confidence_level,
+    confidenceReasons: dr?.confidence_reasons,
   };
 }
 
@@ -110,6 +128,7 @@ export default function ChatView({ onBuyCredits }: { onBuyCredits?: () => void }
   const { credits, canChat, deductForChat } = useCredits();
   const { activeReport } = useReports();
   const { diagnosisResult, isAnalyzing } = useDiagnosis();
+  const { profile, currentIntake } = usePatient();
 
   const [messages, setMessages] = useState<Message[]>([]);
   const [inputValue, setInputValue] = useState("");
@@ -182,7 +201,25 @@ export default function ChatView({ onBuyCredits }: { onBuyCredits?: () => void }
     setIsTyping(true);
     try {
       const context = buildReportContextPacket(report, result, msg);
-      const payload = { context, language: language === "tr" ? "tr" as const : "en" as const };
+      const patientContext = {
+        knownDiagnoses: profile.knownDiagnoses,
+        chronicConditions: profile.chronicConditions,
+        priorSurgeries: profile.priorSurgeries,
+        activeFollowUpDiagnoses: profile.activeFollowUpDiagnoses,
+        primaryConcern: currentIntake.primaryConcern,
+        bodyRegion: currentIntake.bodyRegion,
+        fileType: currentIntake.fileType,
+        symptomDuration: currentIntake.symptomDuration,
+        symptomTrend: currentIntake.symptomTrend,
+        studyTimeline: currentIntake.studyTimeline,
+        uploadFormat: currentIntake.uploadFormat,
+        desiredOutput: currentIntake.desiredOutput,
+      };
+      const payload = {
+        context,
+        language: language === "tr" ? "tr" as const : "en" as const,
+        patientContext,
+      };
       const res = await fetch("/api/report-chat", {
         method: "POST",
         headers: { "Content-Type": "application/json" },

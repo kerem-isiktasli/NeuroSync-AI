@@ -7,6 +7,23 @@
         { "fieldPath": "userId", "order": "ASCENDING" },
         { "fieldPath": "updatedAt", "order": "DESCENDING" }
       ]
+    },
+    {
+      "collectionGroup": "analysisIntakes",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "userId", "order": "ASCENDING" },
+        { "fieldPath": "analysisId", "order": "ASCENDING" },
+        { "fieldPath": "createdAt", "order": "DESCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "analysisIntakes",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "userId", "order": "ASCENDING" },
+        { "fieldPath": "createdAt", "order": "DESCENDING" }
+      ]
     }
   ],
   "fieldOverrides": []

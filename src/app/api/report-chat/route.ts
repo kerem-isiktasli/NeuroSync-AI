@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { Anthropic } from "@anthropic-ai/sdk";
 import { getReportChatSystemPrompt } from "@/lib/ai/reportChatPrompts";
 import { ANTHROPIC_CONFIG } from "@/lib/anthropicConfig";
+import { getReportModeLabel } from "@/lib/reportTypes";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -11,6 +12,23 @@ const anthropic = new Anthropic({
 });
 
 export interface ReportContextPacket {
+  /** When LOCALIZER_DETECTED: no pathology interpretation; focus on what to upload next. */
+  reportType?: "DIAGNOSTIC" | "LOCALIZER_DETECTED";
+  /** Standardized report mode (full interpretation, metadata-only, etc.). */
+  reportMode?: string;
+  reportLabel?: {
+    whatWasActuallyAnalyzed?: string[];
+    whatCouldNotBeDetermined?: string[];
+    analyzedFileCount?: number;
+    adequacyTier?: string;
+  };
+  localizerReport?: {
+    interpretation: string;
+    explanation: string;
+    recommendation: string[];
+    detectedIndicators: string[];
+    confidence: number;
+  };
   fileName: string;
   modality: string;
   anatomicalRegion: string;
@@ -25,33 +43,127 @@ export interface ReportContextPacket {
   followUpConsiderations: string[];
   medicalDisclaimer: string;
   userQuestion: string;
+  /** Official report text (from OCR) when available */
+  officialReportText?: string;
+  /** Fusion: agreement/mismatch between AI and official report */
+  reportFusion?: {
+    official_report_present: boolean;
+    report_text_summary: string;
+    agreement_points: string[];
+    mismatch_points: Array<{ image_finding: string; report_finding: string; note: string }>;
+    official_report_priority_note: string;
+  };
+  /** Extended context for specific answers */
+  examOverview?: string;
+  technicalSummary?: string;
+  studyAdequacySummary?: string;
+  anatomicalSpecificitySummary?: string;
+  findingsByLevelSummary?: string;
+  whatCannotBeDetermined?: string[];
+  evidenceAgreementSummary?: string;
+  differentialConsiderations?: Array<{ label: string; likelihood: string; why_it_matches: string; why_not_certain: string }>;
+  redFlags?: string[];
+  importantTerms?: Array<{ term: string; plain_explanation: string }>;
+  nextSteps?: string[];
+  confidenceLevel?: string;
+  confidenceReasons?: string[];
 }
 
 function buildUserMessage(ctx: ReportContextPacket): string {
-  const parts: string[] = [
+  const parts: string[] = [];
+
+  if (ctx.reportType === "LOCALIZER_DETECTED" && ctx.localizerReport) {
+    parts.push(
+      "## IMPORTANT: LOCALIZER-ONLY REPORT",
+      "",
+      "This report is NOT a diagnostic interpretation. The uploaded images were detected as MRI/CT localizer (scout) positioning scans.",
+      "No pathology interpretation was performed. The assistant must focus on explaining what was detected and what the user should upload instead.",
+      "",
+      "### Localizer detection",
+      `**What was detected:** ${ctx.localizerReport.interpretation}`,
+      `**Why not diagnostic:** ${ctx.localizerReport.explanation}`,
+      `**Confidence:** ${Math.round((ctx.localizerReport.confidence ?? 0) * 100)}%`,
+      "",
+      "### Detected indicators",
+      ...(ctx.localizerReport.detectedIndicators?.map((i) => `- ${i}`) ?? []),
+      "",
+      "### Recommended uploads (exact next steps)",
+      ...(ctx.localizerReport.recommendation?.map((r) => `- ${r}`) ?? []),
+      "",
+      "---",
+      "",
+    );
+  }
+
+  const reportTypeLine = ctx.reportMode
+    ? `**Report type:** ${getReportModeLabel(ctx.reportMode, "en")}`
+    : ctx.reportType === "LOCALIZER_DETECTED"
+      ? "**Report type:** Localizer / Positioning scan (NOT diagnostic)"
+      : null;
+
+  parts.push(
     "## Report context",
     "",
     `**File:** ${ctx.fileName}`,
     `**Modality:** ${ctx.modality || "—"}`,
     `**Anatomical region:** ${ctx.anatomicalRegion || "—"}`,
     `**Concern level:** ${ctx.concernLevel || "moderate"}`,
+    ...(reportTypeLine ? [reportTypeLine, ""] : []),
     "",
     "### Summary",
     ctx.summary || "(none)",
     "",
-  ];
+  );
 
+  if (ctx.examOverview) {
+    parts.push("### Exam overview", "", ctx.examOverview, "");
+  }
+  if (ctx.technicalSummary) {
+    parts.push("### Technical summary", "", ctx.technicalSummary, "");
+  }
+  if (ctx.studyAdequacySummary) {
+    parts.push("### Study adequacy", "", ctx.studyAdequacySummary, "");
+  }
   if (ctx.keyFindings?.length) {
     parts.push("### Key findings", "", ...ctx.keyFindings.map((f) => `- ${f}`), "");
   }
   if (ctx.detailedFindings?.length) {
     parts.push("### Detailed findings", "", ...ctx.detailedFindings.map((f) => `- ${f}`), "");
   }
+  if (ctx.anatomicalSpecificitySummary) {
+    parts.push("### Anatomical specificity (levels/sides)", "", ctx.anatomicalSpecificitySummary, "");
+  }
+  if (ctx.findingsByLevelSummary) {
+    parts.push("### Findings by level", "", ctx.findingsByLevelSummary, "");
+  }
   if (ctx.interpretiveImpression) {
     parts.push("### Interpretive impression", "", ctx.interpretiveImpression, "");
   }
+  if (ctx.differentialConsiderations?.length) {
+    parts.push("### Differential considerations (possible explanations)", "");
+    ctx.differentialConsiderations.forEach((d) => {
+      parts.push(`- **${d.label}** [${d.likelihood}]: ${d.why_it_matches} | Why not certain: ${d.why_not_certain}`);
+    });
+    parts.push("");
+  }
+  if (ctx.redFlags?.length) {
+    parts.push("### Red flags (may require urgent review)", "", ...ctx.redFlags.map((r) => `- ${r}`), "");
+  }
+  if (ctx.whatCannotBeDetermined?.length) {
+    parts.push("### What cannot be determined from available evidence", "", ...ctx.whatCannotBeDetermined.map((w) => `- ${w}`), "");
+  }
+  if (ctx.evidenceAgreementSummary) {
+    parts.push("### Evidence agreement (multi-image / cross-source)", "", ctx.evidenceAgreementSummary, "");
+  }
   if (ctx.limitations?.length) {
     parts.push("### Limitations", "", ...ctx.limitations.map((l) => `- ${l}`), "");
+  }
+  if (ctx.confidenceLevel || ctx.confidenceReasons?.length) {
+    parts.push("### Confidence assessment", "");
+    if (ctx.confidenceLevel) parts.push(`Level: ${ctx.confidenceLevel}`, "");
+    if (ctx.confidenceReasons?.length) {
+      parts.push("Reasons:", "", ...ctx.confidenceReasons.map((r) => `- ${r}`), "");
+    }
   }
   if (ctx.additionalDataRequested?.length) {
     parts.push("### Additional data requested", "");
@@ -59,6 +171,14 @@ function buildUserMessage(ctx: ReportContextPacket): string {
       parts.push(`- ${a.item} (${a.priority}): ${a.reason}`);
     });
     parts.push("");
+  }
+  if (ctx.importantTerms?.length) {
+    parts.push("### Important terms explained", "");
+    ctx.importantTerms.forEach((t) => parts.push(`- **${t.term}**: ${t.plain_explanation}`));
+    parts.push("");
+  }
+  if (ctx.nextSteps?.length) {
+    parts.push("### Next steps", "", ...ctx.nextSteps.map((n) => `- ${n}`), "");
   }
   if (ctx.questionsForDoctor?.length) {
     parts.push("### Questions for doctor", "", ...ctx.questionsForDoctor.map((q) => `- ${q}`), "");
@@ -68,6 +188,25 @@ function buildUserMessage(ctx: ReportContextPacket): string {
   }
   if (ctx.medicalDisclaimer) {
     parts.push("### Medical disclaimer", "", ctx.medicalDisclaimer, "");
+  }
+  if (ctx.officialReportText) {
+    parts.push("### Official report text (from patient's document)", "", ctx.officialReportText.slice(0, 2000), "");
+  }
+  if (ctx.reportFusion?.official_report_present) {
+    parts.push("### AI vs official report comparison", "");
+    if (ctx.reportFusion.agreement_points?.length) {
+      parts.push("**Agreements:**", "", ...ctx.reportFusion.agreement_points.map((a) => `- ${a}`), "");
+    }
+    if (ctx.reportFusion.mismatch_points?.length) {
+      parts.push("**Disagreements:**", "");
+      ctx.reportFusion.mismatch_points.forEach((m) => {
+        parts.push(`- AI: ${m.image_finding} | Report: ${m.report_finding} | Note: ${m.note}`);
+      });
+      parts.push("");
+    }
+    if (ctx.reportFusion.official_report_priority_note) {
+      parts.push("**Priority note:**", ctx.reportFusion.official_report_priority_note, "");
+    }
   }
 
   parts.push("---", "", "## User question", "", ctx.userQuestion);
@@ -88,9 +227,23 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: "Invalid request body" }, { status: 400 });
   }
 
-  const { context, language = "en" } = (body || {}) as {
+  const { context, language = "en", patientContext } = (body || {}) as {
     context?: ReportContextPacket;
     language?: "tr" | "en";
+    patientContext?: {
+      knownDiagnoses?: string[];
+      chronicConditions?: string[];
+      priorSurgeries?: string[];
+      activeFollowUpDiagnoses?: string[];
+      primaryConcern?: string;
+      bodyRegion?: string;
+      fileType?: string;
+      symptomDuration?: string;
+      symptomTrend?: string;
+      studyTimeline?: string;
+      uploadFormat?: string;
+      desiredOutput?: string[];
+    };
   };
 
   if (!context?.userQuestion?.trim()) {
@@ -107,12 +260,28 @@ export async function POST(request: Request) {
 
   try {
     const systemPrompt = getReportChatSystemPrompt(language === "tr" ? "tr" : "en");
-    const userMessage = buildUserMessage(context);
+    let userMessage = buildUserMessage(context);
+
+    if (patientContext) {
+      const pcParts: string[] = ["", "---", "", "## Patient Context (from saved profile and intake)"];
+      if (patientContext.knownDiagnoses?.length) pcParts.push(`Known diagnoses: ${patientContext.knownDiagnoses.join(", ")}`);
+      if (patientContext.chronicConditions?.length) pcParts.push(`Chronic conditions: ${patientContext.chronicConditions.join(", ")}`);
+      if (patientContext.priorSurgeries?.length) pcParts.push(`Prior surgeries: ${patientContext.priorSurgeries.join(", ")}`);
+      if (patientContext.activeFollowUpDiagnoses?.length) pcParts.push(`Active follow-up: ${patientContext.activeFollowUpDiagnoses.join(", ")}`);
+      if (patientContext.primaryConcern) pcParts.push(`Primary concern for this upload: ${patientContext.primaryConcern}`);
+      if (patientContext.bodyRegion) pcParts.push(`Body region: ${patientContext.bodyRegion}`);
+      if (patientContext.symptomDuration) pcParts.push(`Symptom duration: ${patientContext.symptomDuration}`);
+      if (patientContext.symptomTrend) pcParts.push(`Symptom trend: ${patientContext.symptomTrend}`);
+      if (patientContext.studyTimeline) pcParts.push(`Study timeline: ${patientContext.studyTimeline}`);
+      if (patientContext.desiredOutput?.length) pcParts.push(`Desired output: ${patientContext.desiredOutput.join(", ")}`);
+      pcParts.push("", "Use this patient context to provide more relevant, personalized answers. If the patient has known conditions, interpret findings in that context.");
+      userMessage += pcParts.join("\n");
+    }
 
     const callLLM = () =>
       anthropic.messages.create({
         model: ANTHROPIC_CONFIG.model,
-        max_tokens: 1024,
+        max_tokens: 2048,
         system: systemPrompt,
         messages: [{ role: "user", content: userMessage }],
       });

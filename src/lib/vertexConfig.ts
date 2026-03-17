@@ -1,25 +1,38 @@
 /**
  * Single source of truth for Vertex AI / Gemini model configuration.
  *
- * IMPORTANT: Do not use retired Gemini 1.5 models (gemini-1.5-flash-001,
- * gemini-1.5-pro-002, etc.) — they return 404.
- *
- * Use only Gemini 2.5 / 2.0 models. Override via env vars if needed.
+ * Env vars (from your .env):
+ * - GOOGLE_PROJECT_ID, GOOGLE_LOCATION
+ * - VERTEX_CLASSIFICATION_MODEL (intake, classification — fast multimodal)
+ * - VERTEX_EXTRACTION_MODEL (deep medical reasoning — higher-reasoning)
+ * - VERTEX_MODEL (legacy: used when classification/extraction not set)
  */
 
 export const VERTEX_CONFIG = {
-  projectId: process.env.VERTEX_PROJECT_ID || "rapiddoc",
-  location: process.env.VERTEX_LOCATION || "us-central1",
+  projectId:
+    process.env.GOOGLE_PROJECT_ID ||
+    process.env.VERTEX_PROJECT_ID ||
+    "rapiddoc",
+  location:
+    process.env.GOOGLE_LOCATION ||
+    process.env.VERTEX_LOCATION ||
+    "us-central1",
 
-  /** Model for classification and extraction. Single model to avoid 404 from broken fallbacks. */
-  model:
+  /** Fast model for classification, intake, and OCR. */
+  classificationModel:
+    process.env.VERTEX_CLASSIFICATION_MODEL ||
     process.env.VERTEX_MODEL ||
     "gemini-2.5-flash",
 
-  /** Backup model only if primary fails with non-404. Prefer one working model over two broken. */
-  fallbackModel:
-    process.env.VERTEX_FALLBACK_MODEL ||
-    "gemini-2.0-flash-001",
+  /** Higher-reasoning model for extraction / medical reasoning / report synthesis. */
+  extractionModel:
+    process.env.VERTEX_EXTRACTION_MODEL ||
+    "gemini-2.5-pro",
+
+  /** Primary model (used for OCR, fusion when no dedicated model). */
+  model:
+    process.env.VERTEX_MODEL ||
+    "gemini-2.5-flash",
 } as const;
 
 export function getVertexEndpoint(model: string): string {

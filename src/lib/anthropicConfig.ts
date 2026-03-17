@@ -10,5 +10,5 @@ export const ANTHROPIC_CONFIG = {
   /** Model for text synthesis, report chat, and fallback vision. */
   model:
     process.env.ANTHROPIC_MODEL ||
-    "claude-sonnet-4-20250514",
+    "claude-sonnet-4.5",
 } as const;
