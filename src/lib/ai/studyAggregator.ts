@@ -141,7 +141,9 @@ function deriveAdequacy(
     return "non-diagnostic";
   }
 
+  if (diagnostic >= 1 && total === 1) return "diagnostic";
   if (diagnostic >= 2 && planes.length >= 2) return "diagnostic";
+  if (diagnostic >= 1 && total >= 3) return "diagnostic";
 
   if (diagnostic >= 1) return "partial";
 

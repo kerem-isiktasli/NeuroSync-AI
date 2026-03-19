@@ -652,10 +652,41 @@ export default function AIReport() {
   const [isGeneratingPdf, setIsGeneratingPdf] = useState(false);
   const [pdfError, setPdfError] = useState<string | null>(null);
   const [, setFontReady] = useState(false);
+  const [lastCompletedResult, setLastCompletedResult] = useState<DiagnosisResult | null>(null);
 
   useEffect(() => {
     loadNotoSansFont().then((b64) => { if (b64) setFontReady(true); });
   }, []);
+
+  useEffect(() => {
+    if (diagnosisResult) {
+      setLastCompletedResult(diagnosisResult);
+    }
+  }, [diagnosisResult]);
+
+  const generatePDF = async (action: "download" | "view", overrideData?: DiagnosisResult) => {
+    const pdfData = overrideData ?? diagnosisResult;
+    if (!pdfData) return;
+    try {
+      setIsGeneratingPdf(true);
+      setPdfError(null);
+      const fontB64 = await loadNotoSansFont();
+      const doc = generatePdfDoc(pdfData, language as "tr" | "en", fontB64);
+      if (action === "view") {
+        window.open(doc.output("bloburl") as unknown as string, "_blank");
+      } else {
+        doc.save(`RapiMed_Report_${Date.now()}.pdf`);
+      }
+      setIsGeneratingPdf(false);
+      toast({ title: t("export_report"), description: action === "download" ? "PDF downloaded." : "PDF opened in new tab." });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "PDF could not be generated.";
+      console.error("PDF Generation Error:", err);
+      setPdfError(message);
+      setIsGeneratingPdf(false);
+      toast({ variant: "destructive", title: t("export_unavailable"), description: message });
+    }
+  };
 
   if (!diagnosisResult && isAnalyzing) {
     return (
@@ -672,6 +703,16 @@ export default function AIReport() {
         <div className="w-full max-w-xs mt-6 h-1.5 bg-theme-surface rounded-full overflow-hidden">
           <motion.div className="h-full bg-theme-accent rounded-full" initial={{ width: "0%" }} animate={{ width: "70%" }} transition={{ duration: 1.5, repeat: Infinity, repeatType: "reverse" }} />
         </div>
+        {lastCompletedResult && (
+          <button
+            onClick={() => generatePDF("download", lastCompletedResult)}
+            disabled={isGeneratingPdf}
+            className="mt-4 px-4 py-2 rounded-lg text-sm border border-theme-accent/50 bg-theme-accent/10 text-theme-accent hover:bg-theme-accent/20 transition-colors flex items-center gap-2 disabled:opacity-50"
+          >
+            <Download size={14} />
+            {language === "tr" ? "Önceki Raporu İndir" : "Download Previous Report"}
+          </button>
+        )}
       </div>
     );
   }
@@ -714,35 +755,19 @@ export default function AIReport() {
 
   const limitations = hasRich ? (richSections?.limitations ?? []) : [];
 
-  const generatePDF = async (action: "download" | "view") => {
-    try {
-      setIsGeneratingPdf(true);
-      setPdfError(null);
-      const fontB64 = await loadNotoSansFont();
-      const doc = generatePdfDoc(data, language as "tr" | "en", fontB64);
-      if (action === "view") {
-        window.open(doc.output("bloburl") as unknown as string, "_blank");
-      } else {
-        doc.save(`RapiMed_Report_${Date.now()}.pdf`);
-      }
-      setIsGeneratingPdf(false);
-      toast({ title: t("export_report"), description: action === "download" ? "PDF downloaded." : "PDF opened in new tab." });
-    } catch (err) {
-      const message = err instanceof Error ? err.message : "PDF could not be generated.";
-      console.error("PDF Generation Error:", err);
-      setPdfError(message);
-      setIsGeneratingPdf(false);
-      toast({ variant: "destructive", title: t("export_unavailable"), description: message });
-    }
-  };
-
   return (
     <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="h-full flex flex-col px-2 py-3 md:px-4 md:py-4">
 
       {/* ── REPORT TYPE BANNER (truthful analysis depth) ── */}
-      {(data.reportMode || data.reportLabel) && (
+      {data.reportMode !== "FULL_INTERPRETATION_REPORT" && (data.reportMode || data.reportLabel) && (
         <div
-          className={`mb-4 p-4 rounded-xl border ${isLimitedReportMode(data.reportMode) ? "border-amber-500/30 bg-amber-500/5" : "border-theme-border bg-theme-surface"}`}
+          className={`mb-4 p-4 rounded-xl border ${
+            data.reportMode === "LIMITED_INTERPRETATION_REPORT" && data.reportLabel?.adequacyTier === "interpretable"
+              ? "border-theme-border bg-theme-surface"
+              : isLimitedReportMode(data.reportMode)
+              ? "border-amber-500/30 bg-amber-500/5"
+              : "border-theme-border bg-theme-surface"
+          }`}
         >
           <div className="flex items-center gap-2 mb-2">
             <span className={`px-2.5 py-1 rounded-lg text-xs font-semibold ${getReportModeBadgeClass(data.reportMode)}`}>
@@ -761,7 +786,7 @@ export default function AIReport() {
               </span>
             )}
           </div>
-          {data.reportLabel && (data.reportLabel.whatWasActuallyAnalyzed.length > 0 || data.reportLabel.whatCouldNotBeDetermined.length > 0) && (
+          {data.reportLabel && (data.reportLabel.whatWasActuallyAnalyzed.length > 0 || (data.reportLabel.whatCouldNotBeDetermined.length > 0 && (data.reportLabel.adequacyTier === "limited" || data.reportLabel.adequacyTier === "unusable"))) && (
             <div className="grid grid-cols-1 md:grid-cols-2 gap-3 text-xs mt-2">
               {data.reportLabel.whatWasActuallyAnalyzed.length > 0 && (
                 <div>
@@ -773,7 +798,7 @@ export default function AIReport() {
                   </ul>
                 </div>
               )}
-              {data.reportLabel.whatCouldNotBeDetermined.length > 0 && (
+              {data.reportLabel.whatCouldNotBeDetermined.length > 0 && (data.reportLabel.adequacyTier === "limited" || data.reportLabel.adequacyTier === "unusable") && (
                 <div>
                   <p className="font-medium text-theme-text-secondary mb-0.5">{language === "tr" ? "Belirlenemedi:" : "Could not be determined:"}</p>
                   <ul className="list-disc list-inside text-theme-text-muted space-y-0.5">
@@ -810,9 +835,19 @@ export default function AIReport() {
             {data.fileName && <span className="truncate max-w-[180px] text-theme-text-secondary">{data.fileName}</span>}
           </div>
         </div>
-        <div className={`shrink-0 px-3 py-1.5 rounded-full text-label border flex items-center gap-1.5 ${concern.color}`}>
-          <ConcernIcon className="w-3.5 h-3.5" />
-          {concernLabel}
+        <div className="shrink-0 flex items-center gap-2">
+          <button
+            onClick={() => generatePDF("download")}
+            disabled={isGeneratingPdf}
+            className="px-4 py-2 rounded-lg text-sm font-semibold border border-theme-accent/50 bg-theme-accent/10 text-theme-accent hover:bg-theme-accent/20 transition-colors flex items-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed"
+          >
+            {isGeneratingPdf ? <Activity className="w-3.5 h-3.5 animate-spin" /> : <Download size={14} />}
+            {isGeneratingPdf ? "Generating..." : "⬇ Download PDF"}
+          </button>
+          <div className={`px-3 py-1.5 rounded-full text-label border flex items-center gap-1.5 ${concern.color}`}>
+            <ConcernIcon className="w-3.5 h-3.5" />
+            {concernLabel}
+          </div>
         </div>
       </div>
 

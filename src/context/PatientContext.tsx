@@ -51,6 +51,10 @@ interface PatientContextType {
   /** Whether upload should be allowed (both gates pass) */
   canUpload: boolean;
 
+  /** Quick mode: skip detailed intake form, use empty intake */
+  quickModeSelected: boolean;
+  setQuickModeSelected: (v: boolean) => void;
+
   /** Reload profile from Firestore */
   refresh: () => Promise<void>;
 }
@@ -62,6 +66,7 @@ export function PatientProvider({ children }: { children: ReactNode }) {
   const [loading, setLoading] = useState(true);
   const [profile, setProfile] = useState<PatientProfile>({ ...EMPTY_PATIENT_PROFILE });
   const [currentIntake, setCurrentIntake] = useState<AnalysisIntake>({ ...EMPTY_ANALYSIS_INTAKE });
+  const [quickModeSelected, setQuickModeSelected] = useState(false);
 
   const loadData = useCallback(async (userId: string) => {
     setLoading(true);
@@ -84,6 +89,7 @@ export function PatientProvider({ children }: { children: ReactNode }) {
         setUid(null);
         setProfile({ ...EMPTY_PATIENT_PROFILE });
         setCurrentIntake({ ...EMPTY_ANALYSIS_INTAKE });
+        setQuickModeSelected(false);
         setLoading(false);
       }
     });
@@ -113,6 +119,7 @@ export function PatientProvider({ children }: { children: ReactNode }) {
 
   const resetIntake = useCallback(() => {
     setCurrentIntake({ ...EMPTY_ANALYSIS_INTAKE });
+    setQuickModeSelected(false);
   }, []);
 
   const saveCurrentIntake = useCallback(
@@ -138,6 +145,7 @@ export function PatientProvider({ children }: { children: ReactNode }) {
   const intakeMissingFields = useMemo(() => validateIntakeRequired(currentIntake), [currentIntake]);
   const profileOk = useMemo(() => isProfileComplete(profile), [profile]);
   const intakeOk = useMemo(() => isIntakeComplete(currentIntake), [currentIntake]);
+  const step2Complete = intakeOk || quickModeSelected;
 
   return (
     <PatientContext.Provider
@@ -149,12 +157,14 @@ export function PatientProvider({ children }: { children: ReactNode }) {
         profileMissingFields,
         updateProfile,
         currentIntake,
-        intakeComplete: intakeOk,
+        intakeComplete: step2Complete,
         intakeMissingFields,
         patchIntake,
         resetIntake,
         saveCurrentIntake,
-        canUpload: profileOk && intakeOk,
+        canUpload: profileOk && step2Complete,
+        quickModeSelected,
+        setQuickModeSelected,
         refresh,
       }}
     >

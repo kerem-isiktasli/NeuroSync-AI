@@ -64,11 +64,28 @@ import { getDomainAnalyzerPrompt } from './ai/domainAnalyzerPrompts';
 import type { MedicalDomain } from './medical/domainRouter';
 
 const SCOPES = ['https://www.googleapis.com/auth/cloud-platform'];
+
+const retryWithBackoff = async (
+  fn: () => Promise<Response>,
+  maxRetries = 3,
+  baseDelayMs = 2000
+): Promise<Response> => {
+  for (let attempt = 0; attempt <= maxRetries; attempt++) {
+    const res = await fn();
+    if (res.status !== 429) return res;
+    if (attempt === maxRetries) return res;
+    const delay = baseDelayMs * Math.pow(2, attempt) + Math.random() * 1000;
+    console.warn(
+      `[Vertex] 429 on attempt ${attempt + 1}, retrying in ${Math.round(delay)}ms...`
+    );
+    await new Promise((r) => setTimeout(r, delay));
+  }
+  throw new Error("Max retries exceeded");
+};
 const KEY_FILE_PATH = (() => {
   const env = process.env.GOOGLE_APPLICATION_CREDENTIALS;
   if (env) return path.isAbsolute(env) ? env : path.join(process.cwd(), env);
-  // Fallbacks: service-account.json then credentials/google-key.json
-  return path.join(process.cwd(), 'service-account.json');
+  return path.join(process.cwd(), "credentials", "google-key.json");
 })();
 
 const INTAKE_TIMEOUT_MS = 10_000;
@@ -221,15 +238,17 @@ export class VertexImageService {
       },
     };
 
-    const response = await fetch(endpoint, {
-      method: 'POST',
-      headers: {
-        'Authorization': `Bearer ${token}`,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify(body),
-      signal,
-    });
+    const response = await retryWithBackoff(() =>
+      fetch(endpoint, {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${token}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(body),
+        signal,
+      })
+    );
 
     if (response.status === 403) {
       console.error(`[VertexImage] IAM 403 on model ${model}`);
@@ -270,15 +289,17 @@ export class VertexImageService {
       },
     };
 
-    const response = await fetch(endpoint, {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${token}`,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify(body),
-      signal,
-    });
+    const response = await retryWithBackoff(() =>
+      fetch(endpoint, {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${token}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify(body),
+        signal,
+      })
+    );
 
     if (!response.ok) {
       const errText = await response.text().catch(() => "");

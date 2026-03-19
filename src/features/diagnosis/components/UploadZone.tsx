@@ -15,13 +15,14 @@ interface UploadZoneProps {
 
 export default function UploadZone({ canAnalyze = true, onUploadSuccess }: UploadZoneProps) {
   const { analyzeFiles, isAnalyzing, error, diagnosisResult, addLog, resetDiagnosis } = useDiagnosis();
-  const { t } = useSettings();
+  const { t, language } = useSettings();
   const { grantCreditsForTesting } = useCredits();
-  const { canUpload, profileComplete, intakeComplete } = usePatient();
+  const { canUpload, profileComplete, intakeComplete, currentIntake } = usePatient();
   const [isDragging, setIsDragging] = useState(false);
   const [files, setFiles] = useState<File[]>([]);
   const [uploadProgress, setUploadProgress] = useState(0);
   const [localIsAnalyzing, setLocalIsAnalyzing] = useState(false);
+  const [reportFile, setReportFile] = useState<File | null>(null);
 
   const uploadAllowed = canAnalyze && canUpload;
 
@@ -40,6 +41,10 @@ export default function UploadZone({ canAnalyze = true, onUploadSuccess }: Uploa
     e.preventDefault();
     setIsDragging(false);
   }, []);
+
+  const handleReportFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    setReportFile(e.target.files?.[0] ?? null);
+  };
 
   const startAnalysis = async (uploadedFiles: File[]) => {
     resetDiagnosis();
@@ -61,9 +66,10 @@ export default function UploadZone({ canAnalyze = true, onUploadSuccess }: Uploa
       setUploadProgress(100);
       setLocalIsAnalyzing(true);
       addLog(t('scan_received'));
-      await analyzeFiles(uploadedFiles);
+      await analyzeFiles(uploadedFiles, reportFile ?? undefined);
       setLocalIsAnalyzing(false);
       setUploadProgress(0);
+      setReportFile(null);
       if (onUploadSuccess) onUploadSuccess();
     }, 1200);
   };
@@ -226,6 +232,37 @@ export default function UploadZone({ canAnalyze = true, onUploadSuccess }: Uploa
                     disabled={!uploadAllowed}
                   />
                 </label>
+                {uploadAllowed && currentIntake.hasWrittenReport === "yes" && (
+                  <div className="mt-4 p-4 rounded-xl border border-theme-accent/30 bg-theme-accent/5 w-full max-w-md">
+                    <p className="text-sm font-semibold text-theme-text-primary mb-2">
+                      {language === "tr" ? "Doktor raporunuzu da yükleyin" : "Upload your doctor's report too"}
+                    </p>
+                    <p className="text-xs text-theme-text-muted mb-3">
+                      {language === "tr"
+                        ? "Raporunuzu yüklerseniz AI bulgularıyla karşılaştırarak daha doğru bir yorum sağlayabiliriz."
+                        : "Uploading your report allows us to cross-reference AI findings with your doctor's interpretation for a more accurate result."}
+                    </p>
+                    <input
+                      type="file"
+                      accept=".pdf,image/*"
+                      onChange={handleReportFileChange}
+                      className="hidden"
+                      id="report-file-input"
+                    />
+                    <label
+                      htmlFor="report-file-input"
+                      className="cursor-pointer px-4 py-2 rounded-lg border border-theme-accent/40 bg-theme-surface text-sm text-theme-accent hover:bg-theme-accent/10 transition-colors inline-flex items-center gap-2"
+                    >
+                      <FileText size={14} />
+                      {language === "tr" ? "Rapor Seç (PDF veya görsel)" : "Select Report (PDF or image)"}
+                    </label>
+                    {reportFile && (
+                      <p className="text-xs text-emerald-400 mt-2">
+                        ✓ {reportFile.name}
+                      </p>
+                    )}
+                  </div>
+                )}
               </motion.div>
             )}
 

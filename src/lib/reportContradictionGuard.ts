@@ -47,6 +47,28 @@ function stripContradictoryPhrase(text: string, patterns: RegExp[]): string {
   return out;
 }
 
+// Patterns for truncated sentences caused by failed variable substitution in the AI output
+const TRUNCATED_SENTENCE_PATTERNS = [
+  /on this\s*\./gi,
+  /from this\s*\./gi,
+  /on a\s*\./gi,
+  /from a\s*\./gi,
+  /without a\s*\./gi,
+  /based on a\s*[,.]?/gi,
+  /of a\s*\./gi,
+  /in this\s*\./gi,
+  /this\s+[a-z]{0,20}\s*\./gi,
+  /a single,?\s+[a-z]{0,20}\s*\./gi,
+];
+
+// Patterns for known scanner artifact hallucinations
+const ARTIFACT_HALLUCINATION_PATTERNS = [
+  /a (small|tiny),?\s+(bright|hyperintense)\s+signal\s+focus\s+(in|within)\s+the\s+subcutaneous[^.]*\.(possibly[^.]*\.)?/gi,
+  /subcutaneous\s+soft\s+tissues[^.]*lipoma[^.]*/gi,
+  /posterior\s+scalp[^.]*lipoma[^.]*/gi,
+  /incidental\s+lipoma\s+or\s+cyst[^.]*/gi,
+];
+
 function applyGuardsToText(text: string | undefined, ctx: GuardContext): string {
   if (!text || typeof text !== "string") return text ?? "";
   let out = text;
@@ -59,6 +81,14 @@ function applyGuardsToText(text: string | undefined, ctx: GuardContext): string 
   }
   if (ctx.contrastEnhancementPresent === true) {
     out = stripContradictoryPhrase(out, [...NO_CONTRAST_PHRASES_TR, ...NO_CONTRAST_PHRASES_EN]);
+  }
+  // Remove truncated sentences from failed variable substitution
+  for (const p of TRUNCATED_SENTENCE_PATTERNS) {
+    out = out.replace(p, "").replace(/\s{2,}/g, " ").trim();
+  }
+  // Remove known scanner artifact hallucinations
+  for (const p of ARTIFACT_HALLUCINATION_PATTERNS) {
+    out = out.replace(p, "").replace(/\s{2,}/g, " ").trim();
   }
   return out;
 }
@@ -98,10 +128,23 @@ export function applyContradictionGuards(
     if (rs.interpretive_impression) rs.interpretive_impression = applyGuardsToText(rs.interpretive_impression, ctx);
     if (rs.study_adequacy_summary) rs.study_adequacy_summary = applyGuardsToText(rs.study_adequacy_summary, ctx);
     if (Array.isArray(rs.detailed_findings)) {
-      rs.detailed_findings = rs.detailed_findings.map((f) => applyGuardsToText(f, ctx));
+      rs.detailed_findings = rs.detailed_findings
+        .map((f) => applyGuardsToText(f, ctx))
+        .filter((f) => f.trim().length > 20);
     }
     if (Array.isArray(rs.limitations)) {
       rs.limitations = rs.limitations.map((l) => applyGuardsToText(l, ctx));
+      // Deduplicate limitations and cap at 6
+      const seenLim = new Set<string>();
+      rs.limitations = rs.limitations
+        .filter(item => {
+          const key = item.toLowerCase().replace(/[^a-z0-9]/g, "").slice(0, 60);
+          if (seenLim.has(key)) return false;
+          seenLim.add(key);
+          return true;
+        })
+        .filter(item => item.trim().length > 20)
+        .slice(0, 6);
     }
     if (Array.isArray(rs.what_cannot_be_determined)) {
       rs.what_cannot_be_determined = rs.what_cannot_be_determined.map((w) => applyGuardsToText(w, ctx));

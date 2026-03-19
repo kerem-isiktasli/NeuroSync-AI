@@ -277,9 +277,10 @@ export class CoreBridge {
       onClaudeData: (data: FinalResponse) => void;
       onDocStatus: (status: string) => void;
       onDocUrl: (url: string) => void;
-    }
+    },
+    options?: { language?: "tr" | "en"; routingContext?: string; reportFile?: File }
   ): Promise<void> {
-    return this.analyzeStudyBatch([file], [imageBase64], callbacks);
+    return this.analyzeStudyBatch([file], [imageBase64], callbacks, options);
   }
 
   /** @deprecated Use analyzeStudy. */
@@ -408,7 +409,7 @@ export class CoreBridge {
       onDocStatus: (status: string) => void;
       onDocUrl: (url: string) => void;
     },
-    options?: { language?: "tr" | "en"; routingContext?: string }
+    options?: { language?: "tr" | "en"; routingContext?: string; reportFile?: File }
   ): Promise<void> {
     const language = options?.language ?? "tr";
     if (process.env.NODE_ENV !== "production") {
@@ -427,6 +428,9 @@ export class CoreBridge {
       const blob = base64ToBlob(base64, mime);
       formData.append("images", blob, files[i]?.name || `image_${i}.${ext}`);
     }
+    if (options?.reportFile) {
+      formData.append("files", options.reportFile, options.reportFile.name);
+    }
     formData.set("language", language);
     if (options?.routingContext) {
       formData.set("routingContext", options.routingContext);
@@ -439,7 +443,10 @@ export class CoreBridge {
 
     if (!response.ok) {
       const errorText = await response.text();
-      throw new Error(errorText || "Analysis failed");
+      console.error("[CoreBridge] Server error:", response.status, errorText);
+      throw new Error(
+        `Server ${response.status}: ${errorText || "Analysis failed"}`
+      );
     }
 
     if (!response.body) throw new Error("No response body");
@@ -512,7 +519,8 @@ export async function runFullDiagnosis(
     onResult: (result: DiagnosisResult) => void;
     onReport: (text: string) => void;
     onDownloadUrl: (url: string) => void;
-  }
+  },
+  options?: { language?: "tr" | "en"; routingContext?: string; reportFile?: File }
 ): Promise<void> {
   console.log("[NeuroSync] Starting Analysis Pipeline...");
   
@@ -551,7 +559,7 @@ ${result.references?.join("\n") || "-"}
       callbacks.onLog(`[DOCS] PDF Hazır: İndirme linki aktif.`);
       callbacks.onDownloadUrl(url);
     },
-  });
+  }, options);
 
   // Explicit Cleanup Log
   callbacks.onLog(`[SYSTEM] Bellek Temizliği: Görüntü verisi RAM'den silindi.`);
@@ -565,11 +573,12 @@ export async function runFullDiagnosisBatch(
     onReport: (text: string) => void;
     onDownloadUrl: (url: string) => void;
   },
-  routingDecision?: import("@/types/intake").RoutingDecision
+  routingContext?: Record<string, unknown>,
+  options?: { language?: "tr" | "en"; reportFile?: File }
 ): Promise<void> {
   console.log("[NeuroSync] Starting Analysis Pipeline (Batch)...");
-  if (routingDecision) {
-    console.log("[NeuroSync] Intake routing:", routingDecision.pipeline, routingDecision.domain, routingDecision.confidenceLevel);
+  if (routingContext && "pipeline" in routingContext) {
+    console.log("[NeuroSync] Intake routing:", routingContext.pipeline, routingContext.domain, routingContext.confidenceLevel);
   }
 
   const imagesBase64 = await Promise.all(files.map((f) => CoreBridge.fileToBase64(f)));
@@ -604,7 +613,9 @@ ${result.references?.join("\n") || "-"}
       callbacks.onDownloadUrl(url);
     },
   }, {
-    routingContext: routingDecision ? JSON.stringify(routingDecision) : undefined,
+    language: options?.language,
+    routingContext: routingContext ? JSON.stringify(routingContext) : undefined,
+    reportFile: options?.reportFile,
   });
 
   callbacks.onLog(`[SYSTEM] Bellek Temizliği: Görüntü verisi RAM'den silindi.`);

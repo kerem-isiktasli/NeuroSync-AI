@@ -5,7 +5,38 @@ import { validateDicomBatch } from "@/lib/dicom";
 import { classifyUploadBatch, type UploadBatchType } from "@/lib/uploadClassifier";
 import { computeRoutingDecision, inspectFiles } from "@/lib/intakeRouter";
 import { usePatient } from "@/context/PatientContext";
-import type { RoutingDecision } from "@/types/intake";
+import { useSettings } from "@/context/SettingsContext";
+import { useReports } from "@/context/ReportsContext";
+import {
+  runFullDiagnosis,
+  runFullDiagnosisBatch,
+  runFullDiagnosisDicomBatch,
+} from "@/services/core-bridge";
+import type { RoutingDecision, AnalysisIntake, PatientProfile } from "@/types/intake";
+import type { DiagnosisResult, DiagnosisState } from "@/types/diagnosis";
+
+function buildExpandedRoutingContext(
+  routingDecision: RoutingDecision,
+  intake: AnalysisIntake,
+  patientProfile: PatientProfile
+): Record<string, unknown> {
+  return {
+    ...routingDecision,
+    primaryConcern: intake.primaryConcern ?? "",
+    bodyRegion: intake.bodyRegion ?? "",
+    symptomDuration: intake.symptomDuration ?? "",
+    symptomTrend: intake.symptomTrend ?? "",
+    studyTimeline: intake.studyTimeline ?? "",
+    hasWrittenReport: intake.hasWrittenReport === "yes",
+    desiredOutput: Array.isArray(intake.desiredOutput) ? intake.desiredOutput.join(", ") : (intake.desiredOutput ?? ""),
+    doctorReviewed: intake.doctorReviewed === "yes",
+    doctorReviewSummary: intake.doctorReviewSummary ?? "",
+    knownDiagnoses: patientProfile.knownDiagnoses ?? [],
+    chronicConditions: patientProfile.chronicConditions ?? [],
+    reportStyle: routingDecision.reportStyle ?? "full",
+    safetyLevel: routingDecision.safetyLevel ?? "standard",
+  };
+}
 
 function formatAnalysisError(raw: string, err: unknown): string {
   if (raw.includes("404") && (raw.toLowerCase().includes("model") || raw.toLowerCase().includes("not found"))) {
@@ -28,18 +59,11 @@ function formatAnalysisError(raw: string, err: unknown): string {
   }
   return raw;
 }
-import { DiagnosisResult, DiagnosisState } from "@/types/diagnosis";
-import {
-  runFullDiagnosis,
-  runFullDiagnosisBatch,
-  runFullDiagnosisDicomBatch,
-} from "@/services/core-bridge";
-import { useReports } from "@/context/ReportsContext";
 
 interface DiagnosisContextType extends DiagnosisState {
   setSelectedOrgan: (organ: string | null) => void;
   analyzeFile: (file: File) => Promise<void>;
-  analyzeFiles: (files: File[]) => Promise<void>;
+  analyzeFiles: (files: File[], reportFile?: File | null) => Promise<void>;
   resetDiagnosis: () => void;
   loadSavedResult: (result: DiagnosisResult) => void;
   logs: string[];
@@ -62,6 +86,7 @@ export function DiagnosisProvider({ children }: { children: ReactNode }) {
 
   const { createNewReport, markProcessing, markComplete, markFailed } = useReports();
   const { profile, currentIntake, saveCurrentIntake } = usePatient();
+  const { language } = useSettings();
 
   const addLog = useCallback((message: string) => {
     setLogs((prev) => [message, ...prev]);
@@ -79,6 +104,13 @@ export function DiagnosisProvider({ children }: { children: ReactNode }) {
     if (reportId) await markProcessing(reportId);
 
     try {
+      const fileInspection = inspectFiles([file]);
+      const routingDecision = computeRoutingDecision({
+        profile,
+        intake: currentIntake,
+        fileInspection,
+      });
+      const expandedContext = buildExpandedRoutingContext(routingDecision, currentIntake, profile);
       await runFullDiagnosis(file, {
         onLog: (msg) => addLog(msg),
         onResult: (result) => {
@@ -88,7 +120,7 @@ export function DiagnosisProvider({ children }: { children: ReactNode }) {
         },
         onReport: (text) => setReportText(text),
         onDownloadUrl: (url) => setDownloadUrl(url),
-      });
+      }, { language: language === "en" ? "en" : "tr", routingContext: JSON.stringify(expandedContext) });
     } catch (err) {
       const raw = err instanceof Error ? err.message : "An unknown error occurred during analysis.";
       const message = formatAnalysisError(raw, err);
@@ -98,9 +130,9 @@ export function DiagnosisProvider({ children }: { children: ReactNode }) {
     } finally {
       setIsAnalyzing(false);
     }
-  }, [addLog, createNewReport, markProcessing, markComplete, markFailed]);
+  }, [addLog, createNewReport, markProcessing, markComplete, markFailed, profile, currentIntake, language]);
 
-  const analyzeFiles = useCallback(async (files: File[]) => {
+  const analyzeFiles = useCallback(async (files: File[], reportFile?: File | null) => {
     setIsAnalyzing(true);
     setError(null);
     setDiagnosisResult(null);
@@ -162,12 +194,19 @@ export function DiagnosisProvider({ children }: { children: ReactNode }) {
       onDownloadUrl: (url: string) => setDownloadUrl(url),
     };
 
+    const expandedContext = buildExpandedRoutingContext(routingDecision, currentIntake, profile);
+
     try {
       if (useDicom) {
         await validateDicomBatch(files);
-        await runFullDiagnosisDicomBatch(files, callbacks);
+        await runFullDiagnosisDicomBatch(files, callbacks, {
+          language: language === "en" ? "en" : "tr",
+        });
       } else {
-        await runFullDiagnosisBatch(files, callbacks, routingDecision);
+        await runFullDiagnosisBatch(files, callbacks, expandedContext, {
+          language: language === "en" ? "en" : "tr",
+          reportFile: reportFile ?? undefined,
+        });
       }
     } catch (err) {
       const raw = err instanceof Error ? err.message : "An unknown error occurred during analysis.";
@@ -178,7 +217,7 @@ export function DiagnosisProvider({ children }: { children: ReactNode }) {
     } finally {
       setIsAnalyzing(false);
     }
-  }, [addLog, createNewReport, markProcessing, markComplete, markFailed, profile, currentIntake, saveCurrentIntake]);
+  }, [addLog, createNewReport, markProcessing, markComplete, markFailed, profile, currentIntake, saveCurrentIntake, language]);
 
   const resetDiagnosis = useCallback(() => {
     setDiagnosisResult(null);

@@ -177,7 +177,7 @@ export async function updateReportWithResults(
     status: "complete" as ReportStatus,
     updatedAt: serverTimestamp(),
     reportType: result.reportType ?? "DIAGNOSTIC",
-    reportMode: result.reportMode ?? undefined,
+    ...(result.reportMode !== undefined && { reportMode: result.reportMode }),
     modality: result.modality ?? "",
     anatomicalRegion: result.anatomical_region ?? "",
     concernLevel: result.concern_level ?? "",
@@ -196,14 +196,19 @@ export async function updateReportWithResults(
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     const code = (err as { code?: string })?.code;
-    console.error("[ReportService] markComplete DENIED:", {
-      path: "reports/" + reportId,
-      operation: "updateDoc",
-      message: msg,
-      code: code ?? "unknown",
-    });
-    if (msg.toLowerCase().includes("permission") || msg.toLowerCase().includes("insufficient")) {
-      console.error("[ReportService] EXACT DENIED PATH: reports/" + reportId + " (update). Rule: resource.data.userId == request.auth.uid");
+    const lower = msg.toLowerCase();
+    if (lower.includes("unsupported field value") || lower.includes("invalid data")) {
+      console.error("[ReportService] VALIDATION ERROR - invalid field value, not a permissions issue:", msg);
+    } else {
+      console.error("[ReportService] markComplete DENIED:", {
+        path: "reports/" + reportId,
+        operation: "updateDoc",
+        message: msg,
+        code: code ?? "unknown",
+      });
+      if (lower.includes("permission") || lower.includes("insufficient")) {
+        console.error("[ReportService] EXACT DENIED PATH: reports/" + reportId + " (update). Rule: resource.data.userId == request.auth.uid");
+      }
     }
     throw err;
   }

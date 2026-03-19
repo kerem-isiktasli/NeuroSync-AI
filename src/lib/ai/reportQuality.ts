@@ -33,7 +33,10 @@ export function deriveConfidenceAssessment(input: ConfidenceInput): ConfidenceAs
 
   const tr = language === "tr";
 
-  if (imageCount <= 1) {
+  // Only penalise single-image for modalities that inherently require multiple slices (MRI, CT).
+  // A single chest X-ray, dermato photo, or panoramic is a complete study — no penalty.
+  const isMultiSliceModality = ["spine-mri", "brain-imaging", "musculoskeletal-general"].includes(domainRoute);
+  if (imageCount <= 1 && isMultiSliceModality) {
     reasons.push(tr
       ? "Yalnızca tek bir görüntü sağlandı; kapsamlı değerlendirme için birden fazla kesit/görüntü gereklidir."
       : "Only a single image was provided; multiple slices/views are needed for comprehensive assessment.");

@@ -945,6 +945,17 @@ export async function POST(req: Request) {
         return;
       }
 
+      const seen = new Set<string>();
+      imagesInput = imagesInput.filter((img) => {
+        const key = img.fileName + "_" + img.imageBase64.length;
+        if (seen.has(key)) {
+          console.warn("[analyze] Duplicate image removed:", img.fileName);
+          return false;
+        }
+        seen.add(key);
+        return true;
+      });
+
       await sendEvent("status", {
         step: "received",
         message: language === "tr" ? "Görüntüler alındı." : "Images received successfully.",
@@ -1113,7 +1124,10 @@ export async function POST(req: Request) {
       const useLimitedReportMode =
         (diagnosticIndices.length === 0 && viewableIndices.length > 0) ||
         intakeSummary.adequacyTier === "limited" ||
-        intakeSummary.adequacyTier === "unusable";
+        intakeSummary.adequacyTier === "unusable"
+        // "interpretable" and "strong" always get full report
+        ? intakeSummary.adequacyTier !== "interpretable" && intakeSummary.adequacyTier !== "strong"
+        : false;
 
       if (indicesToProcess.length > 0 && indicesToProcess.length < preparedImages.length) {
         await sendEvent("log", {
@@ -1446,6 +1460,42 @@ export async function POST(req: Request) {
               (isUsable(firstExtraction?.anatomical_region) ? firstExtraction!.anatomical_region : undefined) ??
               (isUsable(classificationForSynthesis?.anatomical_region) ? classificationForSynthesis!.anatomical_region : "") ??
               "";
+          }
+
+          // Hard override: certain findings always require urgent review
+          if (finalResult) {
+            const urgentText = [
+              finalResult.summary ?? "",
+              ...(finalResult.key_findings ?? []),
+              ...(finalResult.report_sections?.detailed_findings ?? []),
+              ...(finalResult.report_sections?.interpretive_impression
+                ? [finalResult.report_sections.interpretive_impression]
+                : []),
+            ].join(" ");
+
+            const hasUrgentPattern =
+              /ring.?enhanc/i.test(urgentText) ||
+              /central necrosis/i.test(urgentText) ||
+              /midline shift/i.test(urgentText) ||
+              /subfalcine herniation/i.test(urgentText) ||
+              /obstructive hydrocephalus/i.test(urgentText) ||
+              /acute (subdural|epidural|subarachnoid)/i.test(urgentText) ||
+              /herniation/i.test(urgentText) ||
+              /\bstroke\b/i.test(urgentText) ||
+              /large vessel occlusion/i.test(urgentText) ||
+              /tension pneumothorax/i.test(urgentText) ||
+              /aortic dissection/i.test(urgentText);
+
+            if (
+              hasUrgentPattern &&
+              finalResult.concern_level !== "urgent-review"
+            ) {
+              finalResult.concern_level = "urgent-review";
+              if (!finalResult.red_flags) finalResult.red_flags = [];
+              if (!finalResult.red_flags.includes("Urgent specialist review required")) {
+                finalResult.red_flags.push("Urgent specialist review required");
+              }
+            }
           }
         } else {
           await sendEvent("log", {

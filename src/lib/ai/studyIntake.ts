@@ -104,7 +104,9 @@ export function buildStudyIntakeSummary(
 
   const diagnosticImageCount = perImageIntake.filter(
     (p) =>
-      (p.upload_type === "diagnostic-image" || p.upload_type === "viewer-screenshot") &&
+      // Also count "unknown" type — occurs when intake classification hits 429/timeout fallback.
+      // The fallback sets diagnostic_value:"low" which is still usable for analysis.
+      (p.upload_type === "diagnostic-image" || p.upload_type === "viewer-screenshot" || p.upload_type === "unknown") &&
       (p.diagnostic_value === "high" || p.diagnostic_value === "medium" || p.diagnostic_value === "low")
   ).length;
 
@@ -195,6 +197,8 @@ function deriveAdequacyTier(
   lowQualityCount: number
 ): AdequacyTier {
   if (total === 0) return "unusable";
+  // If study was determined to be diagnostic (e.g. single complete study), skip tier downgrade
+  if (adequacy === "diagnostic") return diagnosticCount >= 3 ? "strong" : "interpretable";
   if (adequacy === "report-only" && diagnosticCount === 0) return "unusable";
   if (adequacy === "localizer-only" && viewableCount === 0) return "unusable";
 
@@ -232,6 +236,7 @@ function deriveStudyAdequacy(
 
   if (hasMixed && diagnostic > 0 && report > 0) return "mixed";
 
+  if (diagnostic >= 1 && total === 1) return "diagnostic";
   if (diagnostic >= 2) return "diagnostic";
   if (diagnostic >= 1) return "partial";
 

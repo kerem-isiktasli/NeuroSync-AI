@@ -29,8 +29,9 @@ import {
 import {
   LogOut, MessageSquarePlus, CreditCard,
   Settings, LayoutDashboard, Activity, FileText, LifeBuoy, Shield,
-  CheckCircle, ClipboardList, User, Upload
+  CheckCircle, ClipboardList, User, Upload, Zap
 } from "lucide-react";
+import { EMPTY_ANALYSIS_INTAKE } from "@/types/intake";
 import { motion, AnimatePresence, Variants } from "framer-motion";
 
 type View = 'dashboard' | 'chat' | 'records' | 'subscription' | 'settings' | 'support';
@@ -42,7 +43,19 @@ export default function DashboardPage() {
   const { credits, canAnalyze, deductForAnalysis } = useCredits();
   const { openReport, activeReportId, setActiveReportId } = useReports();
   const { diagnosisResult, loadSavedResult, currentReportId } = useDiagnosis();
-  const { profileComplete, intakeComplete, canUpload, resetIntake } = usePatient();
+  const { profileComplete, intakeComplete, canUpload, resetIntake, currentIntake, patchIntake, quickModeSelected, setQuickModeSelected } = usePatient();
+  const [intakeMode, setIntakeMode] = useState<"quick" | "detailed" | null>(null);
+
+  const hasIntakeData =
+    !!currentIntake?.fileType ||
+    !!currentIntake?.bodyRegion ||
+    (!!currentIntake?.primaryConcern && currentIntake.primaryConcern.trim().length >= 3);
+
+  useEffect(() => {
+    if (profileComplete && !intakeComplete && hasIntakeData && intakeMode === null) {
+      setIntakeMode("detailed");
+    }
+  }, [profileComplete, intakeComplete, hasIntakeData, intakeMode]);
   const { language } = useSettings();
   const [loading, setLoading] = useState(true);
   const [userEmail, setUserEmail] = useState<string | null>(null);
@@ -394,28 +407,111 @@ export default function DashboardPage() {
                      </div>
                    )}
 
-                   {/* Gate 2: Report Questions — page-native when active, collapsed when complete */}
+                   {/* Gate 2: Intake mode selector (Quick vs Detailed) — or form when Detailed chosen */}
                    {profileComplete && (
                      <>
                        {!intakeComplete ? (
-                         /* Questions active: form is main page content, no bounding card */
+                         /* Step 2 active: show mode selector cards, optionally form below */
                          <div className="flex flex-col">
                            <div className="mb-6">
                              <h2 className="text-xl font-bold text-theme-text-primary flex items-center gap-2">
                                <ClipboardList size={20} className="text-amber-400" />
-                               {language === "tr" ? "Rapor Soruları" : "Report Questions"}
+                               {language === "tr" ? "Nasıl ilerleyelim?" : "How would you like to proceed?"}
                              </h2>
                              <p className="text-sm text-theme-text-secondary mt-1">
                                {language === "tr"
-                                 ? "Tüm soruları yanıtlayın, ardından yükleme açılacak."
-                                 : "Answer all questions, then upload will unlock."}
+                                 ? "Hızlı analiz için yükleyin veya daha kişiselleştirilmiş sonuçlar için soruları yanıtlayın."
+                                 : "Upload for quick analysis, or answer questions for more personalized results."}
                              </p>
                            </div>
-                           <ReportIntakeForm language={(language as "tr" | "en") ?? "en"} compact={false} />
-                           <div className="mt-8 py-3 px-4 rounded-lg bg-theme-surface/60 border border-theme-border/50 flex items-center gap-2 text-theme-text-muted text-sm">
-                             <Upload size={14} className="opacity-60 shrink-0" />
-                             {language === "tr" ? "Yükleme, sorular tamamlandığında açılır." : "Upload unlocks when questions are complete."}
+
+                           <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-6">
+                             <button
+                               type="button"
+                               onClick={() => {
+                                 setIntakeMode("quick");
+                                 setQuickModeSelected(true);
+                                 patchIntake({ ...EMPTY_ANALYSIS_INTAKE });
+                               }}
+                               className={`flex flex-col items-start text-left p-5 rounded-xl border transition-all h-full cursor-pointer ${
+                                 intakeMode === "quick"
+                                   ? "border-theme-accent bg-theme-accent/5"
+                                   : "bg-theme-surface border-theme-border hover:bg-theme-surface-elevated"
+                               }`}
+                             >
+                               <span className="px-2 py-0.5 rounded text-xs font-medium bg-slate-500/20 text-slate-400 border border-slate-500/30 mb-3">
+                                 {language === "tr" ? "En Hızlı" : "Fastest"}
+                               </span>
+                               <div className="flex items-center gap-2 mb-2">
+                                 <Zap size={20} className="text-theme-accent" />
+                                 <h3 className="font-semibold text-theme-text-primary">
+                                   {language === "tr" ? "Hızlı Analiz" : "Quick Analysis"}
+                                 </h3>
+                               </div>
+                               <p className="text-sm text-theme-text-secondary mb-1">
+                                 {language === "tr" ? "Şimdi yükleyin, ~60 saniyede sonuç alın" : "Upload now, get results in ~60 seconds"}
+                               </p>
+                               <p className="text-xs text-theme-text-muted">
+                                 {language === "tr"
+                                   ? "AI görüntünüzü genel tıbbi bilgiyle analiz eder. Kişisel bağlam yok."
+                                   : "AI analyzes your image with general medical knowledge. No personal context."}
+                               </p>
+                             </button>
+
+                             <button
+                               type="button"
+                               onClick={() => {
+                                 setIntakeMode("detailed");
+                                 setQuickModeSelected(false);
+                               }}
+                               className={`flex flex-col items-start text-left p-5 rounded-xl border transition-all h-full cursor-pointer ${
+                                 intakeMode === "detailed"
+                                   ? "border-theme-accent bg-theme-accent/5"
+                                   : "bg-theme-surface border-theme-border hover:bg-theme-surface-elevated"
+                               }`}
+                             >
+                               <span className="px-2 py-0.5 rounded text-xs font-medium bg-theme-accent/20 text-theme-accent border border-theme-accent/30 mb-3">
+                                 {language === "tr" ? "En Doğru" : "Most Accurate"}
+                               </span>
+                               <div className="flex items-center gap-2 mb-2">
+                                 <ClipboardList size={20} className="text-theme-accent" />
+                                 <h3 className="font-semibold text-theme-text-primary">
+                                   {language === "tr" ? "Detaylı Rapor" : "Detailed Report"}
+                                 </h3>
+                               </div>
+                               <p className="text-sm text-theme-text-secondary mb-1">
+                                 {language === "tr" ? "~1 dakikalık form, daha kişiselleştirilmiş sonuçlar" : "~1 minute form, more personalized results"}
+                               </p>
+                               <p className="text-xs text-theme-text-muted">
+                                 {language === "tr"
+                                   ? "Semptomlarınızı ve geçmişinizi anlatın. AI bu bağlamı daha hedefli analiz için kullanır."
+                                   : "Tell us about your symptoms and history. The AI uses this context for a more targeted analysis."}
+                               </p>
+                             </button>
                            </div>
+
+                           {intakeMode === "detailed" && (
+                             <div className="mt-4">
+                               <div className="flex items-center justify-between mb-3">
+                                 <h3 className="text-sm font-semibold text-theme-text-primary">
+                                   {language === "tr" ? "Rapor Soruları" : "Report Questions"}
+                                 </h3>
+                                 <button
+                                   type="button"
+                                   onClick={() => setIntakeMode(null)}
+                                   className="text-xs text-theme-accent hover:underline"
+                                 >
+                                   {language === "tr" ? "Değiştir" : "Change"}
+                                 </button>
+                               </div>
+                               <ReportIntakeForm language={(language as "tr" | "en") ?? "en"} compact={false} />
+                               <div className="mt-6 py-3 px-4 rounded-lg bg-theme-surface/60 border border-theme-border/50 flex items-center gap-2 text-theme-text-muted text-sm">
+                                 <Upload size={14} className="opacity-60 shrink-0" />
+                                 {language === "tr" ? "Yükleme, sorular tamamlandığında açılır." : "Upload unlocks when questions are complete."}
+                               </div>
+                             </div>
+                           )}
+
                          </div>
                        ) : (
                          /* Questions complete: compact summary + upload primary */
@@ -429,7 +525,10 @@ export default function DashboardPage() {
                              </div>
                              <button
                                type="button"
-                               onClick={resetIntake}
+                               onClick={() => {
+                                 resetIntake();
+                                 setIntakeMode(null);
+                               }}
                                className="text-xs text-theme-accent hover:underline"
                              >
                                {language === "tr" ? "Düzenle" : "Edit"}

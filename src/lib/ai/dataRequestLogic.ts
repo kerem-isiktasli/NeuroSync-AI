@@ -95,8 +95,22 @@ export function deriveAdditionalDataRequests(input: DataRequestInput): DataReque
 
   const studyMeta = input.studyMetadata;
 
-  // Single-image cases
-  if (isSingleImage) {
+  // Single-image cases — only request more slices for modalities that genuinely
+  // require multiple slices. Single-view complete studies (chest X-ray, dermatology
+  // photo, panoramic dental) do NOT need this request.
+  const isTomographicModality =
+    domainRoute === "spine-mri" ||
+    domainRoute === "brain-imaging" ||
+    domainRoute === "musculoskeletal-general" ||
+    domainRoute === "abdomen-imaging" ||
+    domainRoute === "chest-imaging" && (
+      classification.modality?.toLowerCase().includes("ct") ||
+      classification.modality?.toLowerCase().includes("mri") ||
+      classification.modality?.toLowerCase().includes("mr")
+    );
+  // Only request full study for tomographic modalities where a single slice
+  // genuinely represents incomplete data
+  if (isSingleImage && isTomographicModality) {
     items.push({
       item: t.fullStudy,
       reason: t.fullStudyReason,
@@ -141,11 +155,16 @@ export function deriveAdditionalDataRequests(input: DataRequestInput): DataReque
   }
 
   // MRI-specific
-  if (
+  // Multi-plane request applies to all MRI/CT modalities, not just spine/brain
+  const isMultiPlaneMRI =
     domainRoute === "spine-mri" ||
     domainRoute === "brain-imaging" ||
-    domainRoute === "musculoskeletal-general"
-  ) {
+    domainRoute === "musculoskeletal-general" ||
+    domainRoute === "abdomen-imaging" ||
+    (classification.modality?.toLowerCase().includes("mri") ||
+     classification.modality?.toLowerCase().includes("mr"));
+
+  if (isMultiPlaneMRI) {
     const missingPlanes = studyMeta
       ? (["sagittal", "axial", "coronal"] as const).filter(
           (p) => !studyMeta.planesAvailable.includes(p)
