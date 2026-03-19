@@ -2,7 +2,7 @@
 
 import React, { useState, useCallback, useEffect } from "react";
 import { motion, AnimatePresence } from "framer-motion";
-import { Upload, Activity, AlertCircle, CheckCircle, Scan, FileText, Lock } from "lucide-react";
+import { Upload, Activity, AlertCircle, CheckCircle, Scan, FileText, Lock, Info } from "lucide-react";
 import { useDiagnosis } from "../context/DiagnosisContext";
 import { useSettings } from "../../../context/SettingsContext";
 import { useCredits } from "../../../context/CreditsContext";
@@ -291,9 +291,19 @@ export default function UploadZone({ canAnalyze = true, onUploadSuccess }: Uploa
                    </div>
                 </div>
                 <h4 className="text-2xl font-bold text-theme-text-primary mb-2">{t('analyzing_anatomy')}</h4>
-                <div className="flex items-center gap-2 text-sm text-theme-text-muted mb-8 font-mono bg-theme-surface px-3 py-1 rounded-lg border border-theme-border">
-                  <FileText className="w-3 h-3" />
-                  {files.length === 1 ? files[0]?.name : `${files.length} files`}
+                <div className="flex flex-col items-center gap-1 mb-8">
+                  <div className="flex items-center gap-2 text-sm text-theme-text-muted font-mono bg-theme-surface px-3 py-1 rounded-lg border border-theme-border">
+                    <FileText className="w-3 h-3" />
+                    {files.length === 1 ? files[0]?.name : `${files.length} files`}
+                  </div>
+                  {files.length > 25 && (
+                    <p className="text-xs text-theme-text-muted mt-1 flex items-center gap-1 max-w-sm text-center">
+                      <Info size={11} className="flex-shrink-0" />
+                      {language === "tr"
+                        ? `${files.length} görüntü yüklendi — sistem en iyi 25 görüntüyü otomatik seçecek.`
+                        : `${files.length} images selected — system will automatically pick the best 25 for analysis.`}
+                    </p>
+                  )}
                 </div>
                 <div className="w-full max-w-sm h-1.5 bg-theme-surface rounded-full overflow-hidden relative mb-4">
                   <motion.div 

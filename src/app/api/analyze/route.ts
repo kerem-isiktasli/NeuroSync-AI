@@ -23,6 +23,7 @@ import {
   getViewableImageIndices,
   type StudyIntakeSummary,
 } from "@/lib/ai/studyIntake";
+import { selectBestSlices } from "@/lib/ai/sliceSelector";
 import type { PerImageIntakeResult } from "@/lib/ai/intakePrompts";
 import type { DomainRoute, ClassificationResult } from "@/lib/ai/promptRouter";
 import { ANTHROPIC_CONFIG } from "@/lib/anthropicConfig";
@@ -38,6 +39,8 @@ const anthropic = new Anthropic({
 });
 
 const MAX_IMAGES = 50;
+const MAX_SLICES_FOR_ANALYSIS =
+  parseInt(process.env.MAX_DICOM_SLICES_FOR_AI ?? "25", 10) || 25;
 const MAX_IMAGE_BYTES = 20 * 1024 * 1024;
 /** Per-image Vertex call timeout (classify+extract). */
 const PER_IMAGE_TIMEOUT_MS = 60_000;
@@ -152,6 +155,9 @@ const FinalResponseSchema = z.object({
     whatCouldNotBeDetermined: z.array(z.string()),
     analyzedSliceCount: z.number().optional(),
     analyzedFileCount: z.number().optional(),
+    totalUploadedCount: z.number().optional(),
+    selectedForAnalysisCount: z.number().optional(),
+    selectionApplied: z.boolean().optional(),
     confidenceTier: z.string().optional(),
     adequacyTier: z.string().optional(),
   }).optional(),
@@ -1117,9 +1123,29 @@ export async function POST(req: Request) {
       // Prefer diagnostic images; fall back to all viewable; ultimate fallback: all images
       const diagnosticIndices = getDiagnosticImageIndices(perImageIntake);
       const viewableIndices = getViewableImageIndices(perImageIntake);
-      let indicesToProcess =
-        diagnosticIndices.length > 0 ? diagnosticIndices : viewableIndices;
-      if (indicesToProcess.length === 0) indicesToProcess = preparedImages.map((_, i) => i);
+
+      let indicesToProcess: number[];
+
+      if (preparedImages.length > MAX_SLICES_FOR_ANALYSIS) {
+        indicesToProcess = selectBestSlices(
+          perImageIntake,
+          MAX_SLICES_FOR_ANALYSIS
+        );
+        await sendEvent("log", {
+          phase: "slice-selection",
+          totalUploaded: preparedImages.length,
+          selectedForAnalysis: indicesToProcess.length,
+          message:
+            language === "tr"
+              ? `${preparedImages.length} görüntüden en iyi ${indicesToProcess.length} tanesi seçildi.`
+              : `Selected best ${indicesToProcess.length} of ${preparedImages.length} uploaded images for analysis.`,
+        });
+      } else {
+        indicesToProcess =
+          diagnosticIndices.length > 0 ? diagnosticIndices : viewableIndices;
+        if (indicesToProcess.length === 0)
+          indicesToProcess = preparedImages.map((_, i) => i);
+      }
       const imagesToProcess = indicesToProcess.map((idx) => preparedImages[idx]).filter(Boolean);
       const useLimitedReportMode =
         (diagnosticIndices.length === 0 && viewableIndices.length > 0) ||
@@ -1571,6 +1597,9 @@ export async function POST(req: Request) {
         displayUnit: "images",
         adequacyTier: intakeSummary.adequacyTier ?? "interpretable",
         confidenceTier: intakeSummary.adequacyTier ?? "interpretable",
+        totalUploadedCount: preparedImages.length,
+        selectedForAnalysisCount: imagesToProcess.length,
+        selectionApplied: preparedImages.length > MAX_SLICES_FOR_ANALYSIS,
       };
 
       // ──── ATTACH SUPPLEMENTARY DATA ────

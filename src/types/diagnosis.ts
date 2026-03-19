@@ -77,6 +77,12 @@ export interface ReportLabel {
   whatCouldNotBeDetermined: string[];
   analyzedSliceCount?: number;
   analyzedFileCount?: number;
+  /** Total files uploaded before intelligent slice cap (when selectionApplied). */
+  totalUploadedCount?: number;
+  /** Count actually analyzed after selection. */
+  selectedForAnalysisCount?: number;
+  /** True when upload exceeded MAX_DICOM_SLICES_FOR_AI and best slices were chosen. */
+  selectionApplied?: boolean;
   /** Screenshots = images; DICOM = slices. NEVER use "slices" for JPG/PNG uploads. */
   displayUnit?: ReportDisplayUnit;
   confidenceTier?: "unusable" | "limited" | "interpretable" | "strong";

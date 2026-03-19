@@ -28,9 +28,32 @@ export async function GET(request: Request) {
     }
     return NextResponse.json({ admin }, { status: 200 });
   } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    const isCredentialError =
+      msg.includes("FIREBASE_APPLICATION_CREDENTIALS") ||
+      msg.includes("credential") ||
+      msg.includes("project_id") ||
+      msg.includes("ENOENT") ||
+      msg.includes("no such file");
+
     if (process.env.NODE_ENV !== "production") {
-      console.log("[admin/verify] verifyIdToken failed:", err instanceof Error ? err.message : String(err));
+      console.error("[admin/verify] error:", msg);
+      if (isCredentialError) {
+        console.error(
+          "[admin/verify] CREDENTIAL ERROR — check " +
+            "FIREBASE_APPLICATION_CREDENTIALS in .env.local points " +
+            "to a valid neurosync-e6846 service account JSON file"
+        );
+      }
     }
-    return NextResponse.json({ admin: false }, { status: 401 });
+    return NextResponse.json(
+      {
+        admin: false,
+        ...(process.env.NODE_ENV !== "production" && isCredentialError
+          ? { debug: "credential_error" }
+          : {}),
+      },
+      { status: 401 }
+    );
   }
 }

@@ -777,7 +777,15 @@ export default function AIReport() {
               <span className="text-xs text-theme-text-muted">
                 {data.reportLabel.displayUnit === "slices"
                   ? `${data.reportLabel.analyzedFileCount} ${language === "tr" ? "dosya" : "files"} · ${data.reportLabel.analyzedSliceCount ?? data.reportLabel.analyzedFileCount} ${language === "tr" ? "kesit" : "slices"}`
-                  : `${data.reportLabel.analyzedFileCount} ${language === "tr" ? "görüntü" : "images"}`}
+                  : data.reportLabel.selectionApplied &&
+                      data.reportLabel.selectedForAnalysisCount != null &&
+                      data.reportLabel.totalUploadedCount != null
+                    ? `${data.reportLabel.selectedForAnalysisCount} of ${data.reportLabel.totalUploadedCount} ${
+                        language === "tr"
+                          ? "görüntü analiz edildi"
+                          : "images analyzed (best selected)"
+                      }`
+                    : `${data.reportLabel.analyzedFileCount} ${language === "tr" ? "görüntü" : "images"}`}
               </span>
             )}
             {data.reportLabel?.adequacyTier && (
