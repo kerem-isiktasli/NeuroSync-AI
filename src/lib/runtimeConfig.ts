@@ -40,11 +40,11 @@ const DEFAULTS: RuntimeConfig = {
   updatedAt: new Date().toISOString(),
   vertexModel: process.env.VERTEX_EXTRACTION_MODEL || process.env.VERTEX_MODEL || "gemini-2.5-flash",
   vertexFallbackModel: process.env.VERTEX_FALLBACK_MODEL || "gemini-2.5-flash",
-  anthropicModel: process.env.ANTHROPIC_MODEL || "claude-sonnet-4.5",
+  anthropicModel: process.env.ANTHROPIC_MODEL || "claude-sonnet-4-6",
   ocrEnabled: true,
   literatureEnabled: true,
   fusionEnabled: true,
-  maxImages: 8,
+  maxImages: 50,
   maxImageBytes: 20 * 1024 * 1024,
   classificationConfidenceThreshold: 40,
   promptVersionKey: "v1",
@@ -54,14 +54,19 @@ const DEFAULTS: RuntimeConfig = {
 const VALID_MODELS = new Set([
   "gemini-2.5-flash",
   "gemini-2.5-pro",
-  "claude-sonnet-4.5",
+  "gemini-2.0-flash",
+  "gemini-1.5-pro",
+  "gemini-1.5-flash",
+  "claude-sonnet-4-6",
+  "claude-sonnet-4-5",
   "claude-sonnet-4-20250514",
   "claude-3-5-sonnet-20241022",
+  "claude-haiku-4-5",
 ]);
 
 function validateAndMerge(config: Partial<RuntimeConfig>): RuntimeConfig {
   const merged = { ...DEFAULTS, ...config };
-  if (merged.maxImages < 1 || merged.maxImages > 20) merged.maxImages = DEFAULTS.maxImages;
+  if (merged.maxImages < 1 || merged.maxImages > 100) merged.maxImages = DEFAULTS.maxImages;
   if (merged.maxImageBytes < 1024 * 1024 || merged.maxImageBytes > 100 * 1024 * 1024) {
     merged.maxImageBytes = DEFAULTS.maxImageBytes;
   }
@@ -70,6 +75,7 @@ function validateAndMerge(config: Partial<RuntimeConfig>): RuntimeConfig {
   }
   if (!VALID_MODELS.has(merged.vertexModel)) merged.vertexModel = DEFAULTS.vertexModel;
   if (!VALID_MODELS.has(merged.vertexFallbackModel)) merged.vertexFallbackModel = DEFAULTS.vertexFallbackModel;
+  if (!VALID_MODELS.has(merged.anthropicModel)) merged.anthropicModel = DEFAULTS.anthropicModel;
   return merged;
 }
 

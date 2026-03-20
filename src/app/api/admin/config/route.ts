@@ -29,7 +29,25 @@ export async function GET(request: Request) {
   const adminDb = getAdminFirestore();
   const snap = await adminDb.collection("config").doc("active").get();
   if (!snap.exists) {
-    return NextResponse.json({ config: null, message: "No config yet" });
+    const defaults = {
+      vertexModel:
+        process.env.VERTEX_EXTRACTION_MODEL ||
+        process.env.VERTEX_MODEL ||
+        "gemini-2.5-flash",
+      vertexFallbackModel: process.env.VERTEX_FALLBACK_MODEL || "gemini-2.5-flash",
+      anthropicModel: process.env.ANTHROPIC_MODEL || "claude-sonnet-4-6",
+      ocrEnabled: true,
+      literatureEnabled: true,
+      fusionEnabled: true,
+      maxImages: 50,
+      classificationConfidenceThreshold: 40,
+      promptVersionKey: "v1",
+      schemaVersion: "1.0",
+    };
+    return NextResponse.json({
+      config: defaults,
+      message: "Using defaults (no saved config yet)",
+    });
   }
   const data = snap.data();
   return NextResponse.json({ config: data, updatedAt: data?.updatedAt });
