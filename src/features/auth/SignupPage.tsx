@@ -10,12 +10,14 @@ import {
   AlertCircle,
   User,
 } from "lucide-react";
-import { 
-  signInWithPopup, 
+import {
+  signInWithPopup,
   signInWithRedirect,
   createUserWithEmailAndPassword,
   getRedirectResult,
   onAuthStateChanged,
+  sendEmailVerification,
+  signOut,
 } from "firebase/auth";
 import { auth, googleProvider } from "@/lib/firebase";
 import { redirectAfterAuth } from "@/lib/adminAuth";
@@ -35,6 +37,7 @@ export default function SignupPage() {
   });
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
+  const [verificationSent, setVerificationSent] = useState(false);
 
   useEffect(() => {
     getRedirectResult(auth)
@@ -52,7 +55,10 @@ export default function SignupPage() {
 
   useEffect(() => {
     const unsub = onAuthStateChanged(auth, (user) => {
-      if (user) redirectAfterAuth(user, router);
+      if (user && (user.emailVerified || 
+        user.providerData.some(p => p.providerId === "google.com"))) {
+        redirectAfterAuth(user, router);
+    }
     });
     return () => unsub();
   }, [router]);
@@ -60,6 +66,15 @@ export default function SignupPage() {
   // Mouse tracking for glow effect
   const mouseX = useMotionValue(0);
   const mouseY = useMotionValue(0);
+
+  // Must be called unconditionally before any early return
+  const backgroundGradient = useMotionTemplate`
+    radial-gradient(
+      650px circle at ${mouseX}px ${mouseY}px,
+      hsl(var(--theme-accent) / 0.12),
+      transparent 80%
+    )
+  `;
 
   function handleMouseMove({ currentTarget, clientX, clientY }: React.MouseEvent) {
     const { left, top } = currentTarget.getBoundingClientRect();
@@ -97,7 +112,15 @@ export default function SignupPage() {
     setError(null);
     try {
       const { user } = await createUserWithEmailAndPassword(auth, formData.email, formData.password);
-      await redirectAfterAuth(user, router);
+      try {
+        await sendEmailVerification(user);
+      } catch (verErr) {
+        console.warn("[Signup] Could not send verification:", verErr);
+      }
+      await signOut(auth);
+      setVerificationSent(true);
+      setLoading(false);
+      return;
     } catch (err: unknown) {
       const code = (err as { code?: string })?.code;
       let message = (err as Error)?.message ?? "Sign-up failed.";
@@ -112,6 +135,62 @@ export default function SignupPage() {
     }
   };
 
+  if (verificationSent) {
+    return (
+      <div className="min-h-screen flex items-center justify-center p-4" style={{ background: "#0a0f1e" }}>
+        <div
+          className="max-w-md w-full rounded-2xl p-8 text-center relative overflow-hidden"
+          style={{
+            background: "rgba(255,255,255,0.03)",
+            border: "1px solid rgba(255,255,255,0.08)",
+          }}
+        >
+          <div
+            className="absolute top-0 left-0 right-0 h-px rounded-t-2xl"
+            style={{
+              background: "linear-gradient(90deg, transparent, #00d4ff, transparent)",
+            }}
+          />
+          <div
+            className="w-16 h-16 rounded-2xl flex items-center justify-center mx-auto mb-6"
+            style={{
+              background: "rgba(0,255,136,0.08)",
+              border: "1px solid rgba(0,255,136,0.2)",
+            }}
+          >
+            <Mail className="w-8 h-8" style={{ color: "#00ff88" }} />
+          </div>
+          <h2 className="text-xl font-bold mb-2" style={{ color: "#e8edf5" }}>
+            Check your email
+          </h2>
+          <p className="text-sm mb-2 font-mono" style={{ color: "#7a8aa0" }}>
+            We sent a verification link to
+          </p>
+          <p className="text-sm mb-6 font-mono font-bold" style={{ color: "#00d4ff" }}>
+            {formData.email}
+          </p>
+          <p className="text-xs mb-8 leading-relaxed" style={{ color: "#3d4f66" }}>
+            Click the link in the email to activate your account. After verifying, return here to sign in. Check your spam folder if you
+            don&apos;t see it.
+          </p>
+          <Link
+            href="/login"
+            className="block w-full py-3.5 rounded-xl font-bold text-sm text-center transition-all"
+            style={{
+              background: "linear-gradient(135deg, #00d4ff, #0099cc)",
+              color: "#001a2e",
+            }}
+          >
+            Go to Sign In
+          </Link>
+          <p className="mt-4 text-xs font-mono" style={{ color: "#3d4f66" }}>
+            Link expires in 24 hours
+          </p>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div 
       className="min-h-screen bg-theme-bg flex items-center justify-center relative overflow-hidden font-sans selection:bg-theme-accent/30 py-10 transition-colors duration-300"
@@ -124,13 +203,7 @@ export default function SignupPage() {
       <motion.div
         className="pointer-events-none absolute -inset-px rounded-2xl opacity-0 transition duration-300 group-hover:opacity-100"
         style={{
-          background: useMotionTemplate`
-            radial-gradient(
-              650px circle at ${mouseX}px ${mouseY}px,
-              hsl(var(--theme-accent) / 0.12),
-              transparent 80%
-            )
-          `,
+          background: backgroundGradient,
         }}
       />
 

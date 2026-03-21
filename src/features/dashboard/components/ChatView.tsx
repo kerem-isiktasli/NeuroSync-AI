@@ -52,13 +52,6 @@ function getConcernBadge(level: string | undefined, lang: string) {
   return { ...cfg, text: lang === "tr" ? cfg.labelTr : cfg.label };
 }
 
-const STATUS_COLORS: Record<string, string> = {
-  uploaded: "bg-blue-500/10 text-blue-400",
-  processing: "bg-amber-500/10 text-amber-400",
-  complete: "bg-emerald-500/10 text-emerald-400",
-  failed: "bg-red-500/10 text-red-400",
-};
-
 // ─── Report context packet for chat API ───
 
 type ReportDoc = import("@/services/reportService").ReportDoc;
@@ -125,7 +118,7 @@ function buildReportContextPacket(
 export default function ChatView({ onBuyCredits }: { onBuyCredits?: () => void }) {
   const { t, language } = useSettings();
   const { toast } = useToast();
-  const { credits, canChat, deductForChat } = useCredits();
+  const { balances, canChat, deductForChat } = useCredits();
   const { activeReport } = useReports();
   const { diagnosisResult, isAnalyzing } = useDiagnosis();
   const { profile, currentIntake } = usePatient();
@@ -140,6 +133,33 @@ export default function ChatView({ onBuyCredits }: { onBuyCredits?: () => void }
   const result = diagnosisResult;
   const hasReport = !!(report && report.status !== "uploaded");
   const isComplete = report?.status === "complete";
+
+  type ChatMode = "report" | "general";
+  const [chatMode, setChatMode] = useState<ChatMode>(() => (hasReport ? "report" : "general"));
+  const [generalHistory, setGeneralHistory] = useState<Array<{ role: "user" | "assistant"; content: string }>>([]);
+  const [generalMessages, setGeneralMessages] = useState<Message[]>(() => [
+    {
+      id: "general-welcome",
+      text:
+        language === "tr"
+          ? "Merhaba! Tıbbi sorularınızı yanıtlamak için buradayım. Semptomlar, hastalıklar veya ne zaman doktora gitmeniz gerektiği hakkında sorabilirsiniz. Kesin tanı koymuyorum, ancak size doğru yönde yardımcı olmaya çalışırım."
+          : "Hello! I'm here to help answer your medical questions. You can ask me about symptoms, conditions, medications, or when to see a doctor. I don't give diagnoses, but I'll help point you in the right direction.",
+      sender: "ai",
+      timestamp: new Date(),
+      status: "read",
+    },
+  ]);
+
+  useEffect(() => {
+    setGeneralMessages((prev) => {
+      if (prev.length === 0 || prev[0]?.id !== "general-welcome") return prev;
+      const text =
+        language === "tr"
+          ? "Merhaba! Tıbbi sorularınızı yanıtlamak için buradayım. Semptomlar, hastalıklar veya ne zaman doktora gitmeniz gerektiği hakkında sorabilirsiniz. Kesin tanı koymuyorum, ancak size doğru yönde yardımcı olmaya çalışırım."
+          : "Hello! I'm here to help answer your medical questions. You can ask me about symptoms, conditions, medications, or when to see a doctor. I don't give diagnoses, but I'll help point you in the right direction.";
+      return [{ ...prev[0], text }, ...prev.slice(1)];
+    });
+  }, [language]);
 
   // Build contextual welcome message
   useEffect(() => {
@@ -165,14 +185,14 @@ export default function ChatView({ onBuyCredits }: { onBuyCredits?: () => void }
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [messages]);
+  }, [messages, generalMessages, chatMode]);
 
   const handleSendMessage = async (text?: string) => {
     const msg = (text ?? inputValue).trim();
     if (!msg) return;
     if (isTyping) return;
 
-    if (!canChat || credits <= 0) {
+    if (!canChat || balances.agentTokens <= 0) {
       toast({
         variant: "destructive",
         title: t("insufficient_credits"),
@@ -261,7 +281,7 @@ export default function ChatView({ onBuyCredits }: { onBuyCredits?: () => void }
       }]);
 
       if (res.ok && data?.text) {
-        deductForChat();
+        await deductForChat();
       }
     } catch (err) {
       console.error("[ChatView] report-chat failure:", err);
@@ -278,6 +298,88 @@ export default function ChatView({ onBuyCredits }: { onBuyCredits?: () => void }
           sender: "ai" as const,
           timestamp: new Date(),
           status: "read" as const,
+        },
+      ]);
+    } finally {
+      setIsTyping(false);
+    }
+  };
+
+  const handleGeneralMessage = async (text?: string) => {
+    const msg = (text ?? inputValue).trim();
+    if (!msg || isTyping) return;
+
+    if (!canChat || balances.agentTokens <= 0) {
+      toast({
+        variant: "destructive",
+        title: t("insufficient_credits"),
+        description: language === "tr" ? "Abonelik sayfasından kredi satın alın." : "Go to Subscription to buy more credits.",
+        ...(onBuyCredits && {
+          action: (
+            <ToastAction altText={t("buy_credits")} onClick={onBuyCredits}>
+              {t("buy_credits")}
+            </ToastAction>
+          ),
+        }),
+      });
+      return;
+    }
+
+    const userMsg: Message = {
+      id: Date.now().toString(),
+      text: msg,
+      sender: "user",
+      timestamp: new Date(),
+      status: "sent",
+    };
+    setGeneralMessages((prev) => [...prev, userMsg]);
+    setGeneralHistory((prev) => [...prev, { role: "user", content: msg }]);
+    setInputValue("");
+    setIsTyping(true);
+
+    try {
+      const res = await fetch("/api/general-chat", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          message: msg,
+          language: language === "tr" ? "tr" : "en",
+          history: generalHistory,
+        }),
+      });
+
+      const data = (await res.json()) as { text?: string; error?: string };
+
+      const aiText =
+        res.ok && data.text
+          ? data.text
+          : language === "tr"
+            ? "Asistan geçici olarak kullanılamıyor."
+            : "Assistant temporarily unavailable.";
+
+      const aiMsg: Message = {
+        id: (Date.now() + 1).toString(),
+        text: aiText,
+        sender: "ai",
+        timestamp: new Date(),
+        status: "read",
+      };
+      setGeneralMessages((prev) => [...prev, aiMsg]);
+
+      if (res.ok && data.text) {
+        setGeneralHistory((prev) => [...prev, { role: "assistant", content: data.text! }]);
+        await deductForChat();
+      }
+    } catch (err) {
+      console.error("[GeneralChat] error:", err);
+      setGeneralMessages((prev) => [
+        ...prev,
+        {
+          id: (Date.now() + 1).toString(),
+          text: language === "tr" ? "Bağlantı hatası. Lütfen tekrar deneyin." : "Connection error. Please try again.",
+          sender: "ai",
+          timestamp: new Date(),
+          status: "read",
         },
       ]);
     } finally {
@@ -333,35 +435,6 @@ export default function ChatView({ onBuyCredits }: { onBuyCredits?: () => void }
         ]
     : [];
 
-  // ─── EMPTY STATE (no report) ───
-  if (!report && !isAnalyzing) {
-    return (
-      <div className="flex flex-col h-full bg-theme-surface items-center justify-center p-8 text-center">
-        <div className="w-16 h-16 rounded-2xl bg-theme-accent/10 border border-theme-accent/20 flex items-center justify-center mb-6">
-          <MessageSquarePlus className="w-8 h-8 text-theme-accent" />
-        </div>
-        <h2 className="text-xl font-bold text-theme-text-primary mb-2">
-          {language === "tr" ? "Aktif Rapor Yok" : "No Active Report"}
-        </h2>
-        <p className="text-sm text-theme-text-secondary max-w-md mb-6">
-          {language === "tr"
-            ? "Dashboard'dan yeni bir tarama yükleyin veya Raporlarım sayfasından mevcut bir raporu açın."
-            : "Upload a new scan from the Dashboard, or open an existing report from My Reports."}
-        </p>
-        <div className="flex gap-3">
-          <div className="flex items-center gap-2 px-4 py-2.5 rounded-xl bg-theme-surface-elevated border border-theme-border text-sm text-theme-text-muted">
-            <Upload className="w-4 h-4" />
-            {language === "tr" ? "Dashboard → Yükle" : "Dashboard → Upload"}
-          </div>
-          <div className="flex items-center gap-2 px-4 py-2.5 rounded-xl bg-theme-surface-elevated border border-theme-border text-sm text-theme-text-muted">
-            <FileText className="w-4 h-4" />
-            {language === "tr" ? "Raporlarım → Aç" : "My Reports → Open"}
-          </div>
-        </div>
-      </div>
-    );
-  }
-
   const concern = getConcernBadge(report?.concernLevel || result?.concern_level, language);
   const ConcernIcon = concern.icon;
 
@@ -374,22 +447,144 @@ export default function ChatView({ onBuyCredits }: { onBuyCredits?: () => void }
   const fuCount = (report?.followUpConsiderations?.length ?? result?.follow_up_considerations?.length) || 0;
 
   return (
-    <div className="flex flex-col h-full bg-theme-surface relative overflow-hidden transition-colors duration-300">
-      {/* Background subtle pattern */}
-      <div className="absolute inset-0 opacity-[0.03] bg-[url('https://www.transparenttextures.com/patterns/cubes.png')] pointer-events-none" />
+    <div
+      className="h-full flex flex-col relative overflow-hidden"
+      style={{ color: "#e8edf5", background: "#0d1424" }}
+    >
+      {/* Mode selector */}
+      <div
+        className="shrink-0 flex gap-1 p-1 mx-5 mt-4 mb-2 rounded-xl"
+        style={{
+          background: "rgba(255,255,255,0.03)",
+          border: "1px solid rgba(255,255,255,0.06)",
+        }}
+      >
+        <button
+          type="button"
+          onClick={() => setChatMode("report")}
+          className="flex-1 flex items-center justify-center gap-2 py-2 rounded-lg text-xs font-medium transition-all"
+          style={
+            chatMode === "report"
+              ? {
+                  background: "rgba(0,212,255,0.12)",
+                  border: "1px solid rgba(0,212,255,0.25)",
+                  color: "#00d4ff",
+                }
+              : {
+                  border: "1px solid transparent",
+                  color: "#7a8aa0",
+                }
+          }
+        >
+          <FileText size={13} />
+          {language === "tr" ? "Rapor Asistanı" : "Report Assistant"}
+        </button>
+        <button
+          type="button"
+          onClick={() => setChatMode("general")}
+          className="flex-1 flex items-center justify-center gap-2 py-2 rounded-lg text-xs font-medium transition-all"
+          style={
+            chatMode === "general"
+              ? {
+                  background: "rgba(0,255,136,0.08)",
+                  border: "1px solid rgba(0,255,136,0.2)",
+                  color: "#00ff88",
+                }
+              : {
+                  border: "1px solid transparent",
+                  color: "#7a8aa0",
+                }
+          }
+        >
+          <Stethoscope size={13} />
+          {language === "tr" ? "Genel Tıbbi Soru" : "General Medical Chat"}
+        </button>
+      </div>
 
+      {chatMode === "report" ? (
+        <>
+          {!report && !isAnalyzing ? (
+            <div
+              className="flex-1 flex flex-col items-center justify-center p-8 text-center"
+              style={{ color: "#e8edf5" }}
+            >
+              <div
+                className="w-16 h-16 rounded-2xl flex items-center justify-center mb-6"
+                style={{
+                  background: "rgba(0,212,255,0.08)",
+                  border: "1px solid rgba(0,212,255,0.2)",
+                  boxShadow: "0 0 24px rgba(0,212,255,0.12)",
+                }}
+              >
+                <MessageSquarePlus className="w-8 h-8" style={{ color: "#00d4ff" }} />
+              </div>
+              <h2 className="text-xl font-bold mb-2" style={{ color: "#e8edf5" }}>
+                {language === "tr" ? "Aktif Rapor Yok" : "No Active Report"}
+              </h2>
+              <p className="text-sm max-w-md mb-6 font-mono" style={{ color: "#7a8aa0" }}>
+                {language === "tr"
+                  ? "Dashboard'dan yeni bir tarama yükleyin veya Raporlarım sayfasından mevcut bir raporu açın."
+                  : "Upload a new scan from the Dashboard, or open an existing report from My Reports."}
+              </p>
+              <div className="flex gap-3">
+                <div
+                  className="flex items-center gap-2 px-4 py-2.5 rounded-xl text-sm"
+                  style={{
+                    background: "rgba(255,255,255,0.03)",
+                    border: "1px solid rgba(255,255,255,0.08)",
+                    color: "#7a8aa0",
+                  }}
+                >
+                  <Upload className="w-4 h-4" />
+                  {language === "tr" ? "Dashboard → Yükle" : "Dashboard → Upload"}
+                </div>
+                <div
+                  className="flex items-center gap-2 px-4 py-2.5 rounded-xl text-sm"
+                  style={{
+                    background: "rgba(255,255,255,0.03)",
+                    border: "1px solid rgba(255,255,255,0.08)",
+                    color: "#7a8aa0",
+                  }}
+                >
+                  <FileText className="w-4 h-4" />
+                  {language === "tr" ? "Raporlarım → Aç" : "My Reports → Open"}
+                </div>
+              </div>
+            </div>
+          ) : (
+            <>
       {/* ── REPORT HEADER CARD ── */}
       {report && (
-        <div className="shrink-0 border-b border-theme-border bg-theme-surface-elevated/50 px-5 py-3.5">
-          <div className="flex items-start justify-between gap-3">
+        <div
+          className="shrink-0 px-5 py-4"
+          style={{
+            borderBottom: "1px solid rgba(255,255,255,0.06)",
+            background: "rgba(255,255,255,0.01)",
+          }}
+        >
+          <div
+            className="mb-3 px-4 py-3 rounded-xl flex items-start justify-between gap-3"
+            style={{
+              background: "rgba(0,212,255,0.04)",
+              border: "1px solid rgba(0,212,255,0.12)",
+            }}
+          >
             <div className="min-w-0 flex-1">
               <div className="flex items-center gap-2.5 mb-1">
-                <div className="w-8 h-8 rounded-lg bg-theme-accent/10 border border-theme-accent/20 flex items-center justify-center shrink-0">
-                  <FileText className="w-4 h-4 text-theme-accent" />
+                <div
+                  className="w-8 h-8 rounded-lg flex items-center justify-center shrink-0"
+                  style={{
+                    background: "rgba(0,212,255,0.08)",
+                    border: "1px solid rgba(0,212,255,0.2)",
+                  }}
+                >
+                  <FileText className="w-4 h-4" style={{ color: "#00d4ff" }} />
                 </div>
                 <div className="min-w-0">
-                  <h3 className="text-sm font-semibold text-theme-text-primary truncate">{report.title || fileName}</h3>
-                  <div className="flex items-center gap-2 text-[11px] text-theme-text-muted">
+                  <h3 className="text-sm font-semibold truncate" style={{ color: "#e8edf5" }}>
+                    {report.title || fileName}
+                  </h3>
+                  <div className="flex items-center gap-2 text-[11px] font-mono" style={{ color: "#7a8aa0" }}>
                     {modality && <span>{modality}</span>}
                     {modality && region && <span className="opacity-40">|</span>}
                     {region && <span>{region}</span>}
@@ -400,11 +595,21 @@ export default function ChatView({ onBuyCredits }: { onBuyCredits?: () => void }
               </div>
             </div>
             <div className="flex items-center gap-2 shrink-0">
-              <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold uppercase tracking-wider ${STATUS_COLORS[report.status] ?? STATUS_COLORS.uploaded}`}>
+              <span
+                className="px-2 py-0.5 rounded-full text-[10px] font-bold uppercase tracking-wider"
+                style={{
+                  background: "rgba(0,212,255,0.08)",
+                  border: "1px solid rgba(0,212,255,0.2)",
+                  color: "#00d4ff",
+                }}
+              >
                 {report.status}
               </span>
               {isComplete && (
-                <span className={`px-2.5 py-1 rounded-full text-[10px] font-bold border flex items-center gap-1 ${concern.color}`}>
+                <span
+                  className="px-2.5 py-1 rounded-full text-[10px] font-bold border flex items-center gap-1"
+                  style={{ borderColor: "rgba(255,255,255,0.1)", color: "#e8edf5" }}
+                >
                   <ConcernIcon className="w-3 h-3" />
                   {concern.text}
                 </span>
@@ -414,9 +619,11 @@ export default function ChatView({ onBuyCredits }: { onBuyCredits?: () => void }
 
           {/* ── SUMMARY STRIP ── */}
           {isComplete && summary && (
-            <div className="mt-2.5 pt-2.5 border-t border-theme-border/50">
-              <p className="text-xs text-theme-text-secondary line-clamp-2 mb-2">{summary}</p>
-              <div className="flex gap-4 text-[11px] text-theme-text-muted">
+            <div className="mt-2.5 pt-2.5 px-5" style={{ borderTop: "1px solid rgba(255,255,255,0.06)" }}>
+              <p className="text-xs line-clamp-2 mb-2" style={{ color: "#7a8aa0" }}>
+                {summary}
+              </p>
+              <div className="flex gap-4 text-[11px] font-mono" style={{ color: "#3d4f66" }}>
                 <span className="flex items-center gap-1">
                   <Stethoscope className="w-3 h-3" />
                   {kfCount} {language === "tr" ? "bulgu" : "findings"}
@@ -435,9 +642,9 @@ export default function ChatView({ onBuyCredits }: { onBuyCredits?: () => void }
 
           {/* ── PROCESSING INDICATOR ── */}
           {(report.status === "processing" || isAnalyzing) && (
-            <div className="mt-2.5 pt-2.5 border-t border-theme-border/50 flex items-center gap-2">
-              <Activity className="w-3.5 h-3.5 text-theme-accent animate-pulse" />
-              <span className="text-xs text-theme-accent font-medium">
+            <div className="mt-2.5 pt-2.5 px-5 flex items-center gap-2" style={{ borderTop: "1px solid rgba(255,255,255,0.06)" }}>
+              <Activity className="w-3.5 h-3.5 animate-pulse" style={{ color: "#00d4ff" }} />
+              <span className="text-xs font-medium font-mono" style={{ color: "#00d4ff" }}>
                 {language === "tr" ? "Analiz devam ediyor..." : "Analysis in progress..."}
               </span>
             </div>
@@ -445,9 +652,11 @@ export default function ChatView({ onBuyCredits }: { onBuyCredits?: () => void }
 
           {/* ── FAILED INDICATOR ── */}
           {report.status === "failed" && (
-            <div className="mt-2.5 pt-2.5 border-t border-red-500/20 flex items-center gap-2">
-              <AlertTriangle className="w-3.5 h-3.5 text-red-400" />
-              <span className="text-xs text-red-400">{report.errorMessage || (language === "tr" ? "Analiz başarısız oldu" : "Analysis failed")}</span>
+            <div className="mt-2.5 pt-2.5 px-5 flex items-center gap-2" style={{ borderTop: "1px solid rgba(255,68,102,0.2)" }}>
+              <AlertTriangle className="w-3.5 h-3.5" style={{ color: "#ff4466" }} />
+              <span className="text-xs" style={{ color: "#ff4466" }}>
+                {report.errorMessage || (language === "tr" ? "Analiz başarısız oldu" : "Analysis failed")}
+              </span>
             </div>
           )}
         </div>
@@ -456,17 +665,36 @@ export default function ChatView({ onBuyCredits }: { onBuyCredits?: () => void }
       {/* ── FILE ATTACHMENT CARD (if report exists but is new/processing) ── */}
       {report && !isComplete && report.status !== "failed" && (
         <div className="px-5 pt-3">
-          <div className="flex items-center gap-3 p-3 rounded-xl bg-theme-surface-elevated border border-theme-border">
-            <div className="w-10 h-10 rounded-lg bg-theme-accent/10 border border-theme-accent/20 flex items-center justify-center shrink-0">
-              <FileText className="w-5 h-5 text-theme-accent" />
+          <div
+            className="flex items-center gap-3 p-3 rounded-xl"
+            style={{
+              background: "rgba(255,255,255,0.03)",
+              border: "1px solid rgba(255,255,255,0.07)",
+            }}
+          >
+            <div
+              className="w-10 h-10 rounded-lg flex items-center justify-center shrink-0"
+              style={{
+                background: "rgba(0,212,255,0.08)",
+                border: "1px solid rgba(0,212,255,0.2)",
+              }}
+            >
+              <FileText className="w-5 h-5" style={{ color: "#00d4ff" }} />
             </div>
             <div className="min-w-0 flex-1">
-              <p className="text-sm font-medium text-theme-text-primary truncate">{fileName}</p>
-              <p className="text-[11px] text-theme-text-muted">{report.fileType || "image/jpeg"}</p>
+              <p className="text-sm font-medium truncate" style={{ color: "#e8edf5" }}>
+                {fileName}
+              </p>
+              <p className="text-[11px] font-mono" style={{ color: "#3d4f66" }}>
+                {report.fileType || "image/jpeg"}
+              </p>
             </div>
             {(report.status === "processing" || isAnalyzing) && (
               <div className="shrink-0">
-                <div className="w-5 h-5 border-2 border-theme-accent/30 border-t-theme-accent rounded-full animate-spin" />
+                <div
+                  className="w-5 h-5 border-2 rounded-full animate-spin"
+                  style={{ borderColor: "rgba(0,212,255,0.3)", borderTopColor: "#00d4ff" }}
+                />
               </div>
             )}
           </div>
@@ -486,7 +714,7 @@ export default function ChatView({ onBuyCredits }: { onBuyCredits?: () => void }
       )}
 
       {/* ── CHAT AREA ── */}
-      <div className="flex-1 overflow-y-auto p-4 space-y-3">
+      <div className="flex-1 overflow-y-auto px-5 py-4 space-y-4">
         <AnimatePresence initial={false}>
           {messages.map((msg) => (
             <motion.div
@@ -496,36 +724,56 @@ export default function ChatView({ onBuyCredits }: { onBuyCredits?: () => void }
               className={`flex ${msg.sender === "user" ? "justify-end" : "justify-start"}`}
             >
               <div
-                className={`max-w-[75%] rounded-2xl p-3.5 shadow-sm relative ${
-                  msg.sender === "user"
-                    ? "bg-theme-accent text-theme-accent-foreground rounded-tr-none"
-                    : "bg-theme-surface-elevated text-theme-text-primary rounded-tl-none border border-theme-border"
+                className={`max-w-[85%] rounded-2xl px-4 py-3 text-sm leading-relaxed relative ${
+                  msg.sender === "user" ? "rounded-tr-sm ml-auto" : "rounded-tl-sm"
                 }`}
+                style={
+                  msg.sender === "user"
+                    ? {
+                        background: "rgba(0,212,255,0.1)",
+                        border: "1px solid rgba(0,212,255,0.2)",
+                        color: "#e8edf5",
+                      }
+                    : {
+                        background: "rgba(255,255,255,0.03)",
+                        border: "1px solid rgba(255,255,255,0.07)",
+                        color: "#e8edf5",
+                      }
+                }
               >
                 {msg.attachment && (
-                  <div className="flex items-center gap-2 mb-2 p-2 rounded-lg bg-black/10">
+                  <div
+                    className="flex items-center gap-2 mb-2 p-2 rounded-lg"
+                    style={{ background: "rgba(0,0,0,0.15)" }}
+                  >
                     <FileText size={14} />
                     <span className="text-xs font-medium truncate">{msg.attachment.name}</span>
                   </div>
                 )}
-                <p className="text-sm leading-relaxed whitespace-pre-wrap">{msg.text}</p>
-                <div className="flex items-center justify-end gap-1 mt-1 opacity-60">
-                  <span className="text-[10px]">
+                <p className="whitespace-pre-wrap">{msg.text}</p>
+                <div className="flex items-center justify-end gap-1 mt-1">
+                  <span className="text-[10px] font-mono" style={{ color: "#3d4f66" }}>
                     {msg.timestamp.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
                   </span>
-                  {msg.sender === "user" && <CheckCheck size={12} />}
+                  {msg.sender === "user" && <CheckCheck size={12} style={{ color: "#3d4f66" }} />}
                 </div>
               </div>
             </motion.div>
           ))}
         </AnimatePresence>
 
-        {isTyping && (
+        {isTyping && chatMode === "report" && (
           <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="flex justify-start">
-            <div className="bg-theme-surface-elevated p-3.5 rounded-2xl rounded-tl-none border border-theme-border flex gap-1">
-              <span className="w-2 h-2 bg-theme-accent rounded-full animate-bounce" style={{ animationDelay: "0ms" }} />
-              <span className="w-2 h-2 bg-theme-accent rounded-full animate-bounce" style={{ animationDelay: "150ms" }} />
-              <span className="w-2 h-2 bg-theme-accent rounded-full animate-bounce" style={{ animationDelay: "300ms" }} />
+            <div
+              className="p-3.5 rounded-2xl rounded-tl-sm border flex gap-1.5"
+              style={{
+                background: "rgba(255,255,255,0.03)",
+                borderColor: "rgba(255,255,255,0.07)",
+              }}
+            >
+              <span className="w-1.5 h-1.5 rounded-full animate-bounce" style={{ background: "#00d4ff", animationDelay: "0ms" }} />
+              <span className="w-1.5 h-1.5 rounded-full animate-bounce" style={{ background: "#00d4ff", animationDelay: "150ms" }} />
+              <span className="w-1.5 h-1.5 rounded-full animate-bounce" style={{ background: "#00d4ff", animationDelay: "300ms" }} />
             </div>
           </motion.div>
         )}
@@ -550,10 +798,17 @@ export default function ChatView({ onBuyCredits }: { onBuyCredits?: () => void }
       )}
 
       {/* ── INPUT AREA ── */}
-      <div className="p-4 bg-theme-surface-elevated border-t border-theme-border flex items-center gap-3">
+      <div
+        className="shrink-0 px-5 py-4 flex items-center gap-3"
+        style={{
+          borderTop: "1px solid rgba(255,255,255,0.06)",
+          background: "rgba(255,255,255,0.01)",
+        }}
+      >
         <button
           onClick={() => fileInputRef.current?.click()}
-          className="p-2.5 rounded-full hover:bg-theme-surface text-theme-text-muted hover:text-theme-text-primary transition-colors"
+          className="p-2.5 rounded-full transition-colors hover:bg-white/5"
+          style={{ color: "#7a8aa0" }}
         >
           <Paperclip size={18} />
           <input type="file" ref={fileInputRef} className="hidden" onChange={handleFileUpload} />
@@ -574,23 +829,194 @@ export default function ChatView({ onBuyCredits }: { onBuyCredits?: () => void }
                   ? "Bir soru sorun..."
                   : "Ask a question..."
             }
-            className="w-full bg-theme-surface border border-theme-border rounded-full py-2.5 px-5 text-sm text-theme-text-primary focus:outline-none focus:border-theme-focus-ring transition-all placeholder:text-theme-text-muted"
+            className="w-full rounded-xl py-3 px-4 text-sm outline-none transition-all focus:border-[rgba(0,212,255,0.4)] placeholder:text-[#3d4f66] font-sans"
+            style={{
+              background: "rgba(255,255,255,0.04)",
+              border: "1px solid rgba(255,255,255,0.08)",
+              color: "#e8edf5",
+            }}
           />
         </div>
 
         <div className="flex items-center gap-2">
           {!canChat && (
-            <span className="text-xs text-theme-warning whitespace-nowrap">{t("insufficient_credits")}</span>
+            <span className="text-xs whitespace-nowrap font-mono" style={{ color: "#ffaa00" }}>
+              {t("insufficient_credits")}
+            </span>
           )}
           <button
             onClick={() => handleSendMessage()}
             disabled={!inputValue.trim() || !canChat || isTyping}
-            className="p-2.5 rounded-full bg-theme-accent text-theme-accent-foreground hover:bg-theme-accent/90 transition-all disabled:opacity-50 disabled:cursor-not-allowed shadow-lg"
+            className="p-3 rounded-xl transition-all disabled:cursor-not-allowed"
+            style={
+              !inputValue.trim() || !canChat || isTyping
+                ? {
+                    background: "rgba(255,255,255,0.03)",
+                    border: "1px solid rgba(255,255,255,0.06)",
+                    color: "#3d4f66",
+                  }
+                : {
+                    background: "rgba(0,212,255,0.15)",
+                    border: "1px solid rgba(0,212,255,0.3)",
+                    color: "#00d4ff",
+                  }
+            }
           >
             <Send size={18} />
           </button>
         </div>
       </div>
+            </>
+          )}
+        </>
+      ) : (
+        <>
+          <div className="flex-1 overflow-y-auto px-5 py-4 space-y-4">
+            <AnimatePresence initial={false}>
+              {generalMessages.map((msg) => (
+                <motion.div
+                  key={msg.id}
+                  initial={{ opacity: 0, y: 8 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  className={`flex ${msg.sender === "user" ? "justify-end" : "justify-start"}`}
+                >
+                  <div
+                    className="rounded-2xl px-4 py-3 text-sm leading-relaxed max-w-[85%]"
+                    style={
+                      msg.sender === "user"
+                        ? {
+                            background: "rgba(0,212,255,0.1)",
+                            border: "1px solid rgba(0,212,255,0.2)",
+                            color: "#e8edf5",
+                            borderRadius: "18px 18px 4px 18px",
+                          }
+                        : {
+                            background: "rgba(255,255,255,0.03)",
+                            border: "1px solid rgba(255,255,255,0.07)",
+                            color: "#e8edf5",
+                            borderRadius: "18px 18px 18px 4px",
+                          }
+                    }
+                  >
+                    {msg.text}
+                  </div>
+                </motion.div>
+              ))}
+              {isTyping && chatMode === "general" && (
+                <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="flex justify-start">
+                  <div
+                    className="px-4 py-3 rounded-2xl flex gap-1.5 items-center"
+                    style={{
+                      background: "rgba(255,255,255,0.03)",
+                      border: "1px solid rgba(255,255,255,0.07)",
+                    }}
+                  >
+                    {[0, 1, 2].map((i) => (
+                      <div
+                        key={i}
+                        className="w-1.5 h-1.5 rounded-full animate-bounce"
+                        style={{
+                          background: "#00d4ff",
+                          animationDelay: `${i * 150}ms`,
+                        }}
+                      />
+                    ))}
+                  </div>
+                </motion.div>
+              )}
+            </AnimatePresence>
+            <div ref={messagesEndRef} />
+          </div>
+
+          {generalMessages.length <= 1 && (
+            <div className="px-5 pb-2 flex flex-wrap gap-2">
+              {(language === "tr"
+                ? [
+                    "Baş ağrısı ne zaman ciddidir?",
+                    "Kan değerlerimi nasıl yorumlarım?",
+                    "Ne zaman acile gitmeliyim?",
+                    "Stres belirtileri nelerdir?",
+                  ]
+                : [
+                    "When is a headache serious?",
+                    "How do I read my blood test results?",
+                    "When should I go to the ER?",
+                    "What are signs of high blood pressure?",
+                  ]
+              ).map((q) => (
+                <button
+                  key={q}
+                  type="button"
+                  onClick={() => handleGeneralMessage(q)}
+                  className="px-3 py-1.5 rounded-full text-xs transition-all"
+                  style={{
+                    background: "rgba(255,255,255,0.03)",
+                    border: "1px solid rgba(255,255,255,0.07)",
+                    color: "#7a8aa0",
+                  }}
+                >
+                  {q}
+                </button>
+              ))}
+            </div>
+          )}
+
+          <div
+            className="shrink-0 px-5 py-4"
+            style={{
+              borderTop: "1px solid rgba(255,255,255,0.06)",
+            }}
+          >
+            <div className="flex gap-3 items-end">
+              <input
+                type="text"
+                value={inputValue}
+                onChange={(e) => setInputValue(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter" && !e.shiftKey) {
+                    e.preventDefault();
+                    void handleGeneralMessage();
+                  }
+                }}
+                placeholder={language === "tr" ? "Tıbbi sorunuzu yazın..." : "Ask your medical question..."}
+                className="flex-1 px-4 py-3 rounded-xl text-sm outline-none transition-all placeholder:text-[#3d4f66]"
+                style={{
+                  background: "rgba(255,255,255,0.04)",
+                  border: "1px solid rgba(255,255,255,0.08)",
+                  color: "#e8edf5",
+                }}
+                disabled={isTyping}
+              />
+              <button
+                type="button"
+                onClick={() => void handleGeneralMessage()}
+                disabled={!inputValue.trim() || isTyping}
+                className="p-3 rounded-xl transition-all shrink-0"
+                style={
+                  inputValue.trim() && !isTyping
+                    ? {
+                        background: "rgba(0,255,136,0.12)",
+                        border: "1px solid rgba(0,255,136,0.3)",
+                        color: "#00ff88",
+                      }
+                    : {
+                        background: "rgba(255,255,255,0.03)",
+                        border: "1px solid rgba(255,255,255,0.06)",
+                        color: "#3d4f66",
+                      }
+                }
+              >
+                <Send size={16} />
+              </button>
+            </div>
+            <p className="text-[10px] font-mono mt-2 text-center" style={{ color: "#3d4f66" }}>
+              {language === "tr"
+                ? "Bu sohbet tanı değildir. Kişisel tıbbi tavsiye için doktorunuza başvurun."
+                : "This is not a diagnosis. Consult a doctor for personal medical advice."}
+            </p>
+          </div>
+        </>
+      )}
     </div>
   );
 }

@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { Anthropic } from "@anthropic-ai/sdk";
 import { getReportChatSystemPrompt } from "@/lib/ai/reportChatPrompts";
 import { ANTHROPIC_CONFIG } from "@/lib/anthropicConfig";
+import { loadRuntimeConfig } from "@/lib/runtimeConfig";
 import { getReportModeLabel } from "@/lib/reportTypes";
 
 export const runtime = "nodejs";
@@ -258,6 +259,10 @@ export async function POST(request: Request) {
     });
   }
 
+  const runtimeConfig = await loadRuntimeConfig();
+  const activeModel =
+    runtimeConfig.anthropicModel || ANTHROPIC_CONFIG.model;
+
   try {
     const systemPrompt = getReportChatSystemPrompt(language === "tr" ? "tr" : "en");
     let userMessage = buildUserMessage(context);
@@ -280,7 +285,7 @@ export async function POST(request: Request) {
 
     const callLLM = () =>
       anthropic.messages.create({
-        model: ANTHROPIC_CONFIG.model,
+        model: activeModel,
         max_tokens: 2048,
         system: systemPrompt,
         messages: [{ role: "user", content: userMessage }],
@@ -328,7 +333,7 @@ export async function POST(request: Request) {
     console.error("[report-chat] stack:", stack);
     if (process.env.NODE_ENV !== "production") {
       console.error("[report-chat] provider status:", err && typeof err === "object" && "status" in err ? (err as { status?: number }).status : "N/A");
-      console.error("[report-chat] model used:", ANTHROPIC_CONFIG.model);
+      console.error("[report-chat] model used:", activeModel);
     }
     return NextResponse.json(
       { error: "assistant_unavailable", message: "The report assistant is temporarily unavailable. Please try again." },

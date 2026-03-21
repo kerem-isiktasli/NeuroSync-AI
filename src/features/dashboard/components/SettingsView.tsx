@@ -65,12 +65,12 @@ export default function SettingsView() {
   const isTr = language === "tr";
 
   return (
-    <div className="h-full flex flex-col overflow-hidden">
+    <div className="h-full flex flex-col overflow-hidden" style={{ color: "#e8edf5" }}>
       <header className="shrink-0 p-6 pb-4">
-        <h2 className="text-2xl font-bold text-theme-text-primary">
+        <h2 className="text-2xl font-bold" style={{ color: "#e8edf5" }}>
           {t("settings")}
         </h2>
-        <p className="text-sm text-theme-text-muted mt-0.5">
+        <p className="text-sm font-mono mt-0.5" style={{ color: "#7a8aa0" }}>
           {isTr
             ? "Profil, dil, tema ve bildirimler."
             : "Profile, language, theme, and notifications."}
@@ -80,13 +80,19 @@ export default function SettingsView() {
       <Tabs defaultValue="general" className="flex-1 flex flex-col min-h-0 px-6">
         <TabsList
           className={cn(
-            "w-full justify-start gap-1 h-11 rounded-xl bg-theme-surface border border-theme-border p-1 mb-4"
+            "w-full justify-start gap-1 h-11 rounded-xl p-1 mb-4"
           )}
+          style={{
+            background: "rgba(255,255,255,0.02)",
+            border: "1px solid rgba(255,255,255,0.06)",
+          }}
         >
           <TabsTrigger
             value="general"
             className={cn(
-              "flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition-all data-[state=active]:bg-theme-accent data-[state=active]:text-theme-accent-foreground data-[state=inactive]:text-theme-text-muted hover:text-theme-text-primary"
+              "flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition-all border border-transparent",
+              "data-[state=active]:bg-[rgba(0,212,255,0.1)] data-[state=active]:border-[rgba(0,212,255,0.25)] data-[state=active]:text-[#00d4ff]",
+              "data-[state=inactive]:text-[#7a8aa0] data-[state=inactive]:hover:text-[#e8edf5]"
             )}
           >
             <Settings size={16} />
@@ -95,7 +101,9 @@ export default function SettingsView() {
           <TabsTrigger
             value="medical"
             className={cn(
-              "flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition-all data-[state=active]:bg-theme-accent data-[state=active]:text-theme-accent-foreground data-[state=inactive]:text-theme-text-muted hover:text-theme-text-primary"
+              "flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition-all border border-transparent",
+              "data-[state=active]:bg-[rgba(0,212,255,0.1)] data-[state=active]:border-[rgba(0,212,255,0.25)] data-[state=active]:text-[#00d4ff]",
+              "data-[state=inactive]:text-[#7a8aa0] data-[state=inactive]:hover:text-[#e8edf5]"
             )}
           >
             <User size={16} />
@@ -104,7 +112,9 @@ export default function SettingsView() {
           <TabsTrigger
             value="notifications"
             className={cn(
-              "flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition-all data-[state=active]:bg-theme-accent data-[state=active]:text-theme-accent-foreground data-[state=inactive]:text-theme-text-muted hover:text-theme-text-primary"
+              "flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition-all border border-transparent",
+              "data-[state=active]:bg-[rgba(0,212,255,0.1)] data-[state=active]:border-[rgba(0,212,255,0.25)] data-[state=active]:text-[#00d4ff]",
+              "data-[state=inactive]:text-[#7a8aa0] data-[state=inactive]:hover:text-[#e8edf5]"
             )}
           >
             <Bell size={16} />
@@ -115,42 +125,57 @@ export default function SettingsView() {
         <div className="flex-1 overflow-y-auto pb-8">
           <TabsContent value="general" className="m-0 space-y-4">
             {/* Language */}
-            <div className="rounded-2xl bg-theme-surface-elevated border border-theme-border p-4 flex items-center justify-between">
+            <div
+              className="rounded-xl p-4 flex items-center justify-between"
+              style={{
+                background: "rgba(255,255,255,0.02)",
+                border: "1px solid rgba(255,255,255,0.07)",
+              }}
+            >
               <div className="flex items-center gap-3">
-                <div className="w-9 h-9 rounded-lg bg-blue-500/10 flex items-center justify-center text-blue-500">
+                <div
+                  className="w-9 h-9 rounded-lg flex items-center justify-center"
+                  style={{ background: "rgba(0,212,255,0.08)", color: "#00d4ff" }}
+                >
                   <Globe size={18} />
                 </div>
                 <div>
-                  <h4 className="font-medium text-theme-text-primary text-sm">
+                  <h4 className="font-medium text-sm" style={{ color: "#e8edf5" }}>
                     {t("language")}
                   </h4>
-                  <p className="text-xs text-theme-text-muted">
+                  <p className="text-xs" style={{ color: "#7a8aa0" }}>
                     {t("select_language")}
                   </p>
                 </div>
               </div>
-              <div className="flex gap-1 bg-theme-surface p-1 rounded-lg">
+              <div
+                className="flex gap-1 p-1 rounded-lg"
+                style={{
+                  background: "rgba(255,255,255,0.03)",
+                  border: "1px solid rgba(255,255,255,0.06)",
+                }}
+              >
                 <button
                   type="button"
                   onClick={() => setLanguage("en")}
-                  className={cn(
-                    "px-3 py-1.5 rounded-md text-sm font-medium transition-all",
+                  className={cn("px-3 py-1.5 rounded-md text-sm font-medium transition-all")}
+                  style={
                     language === "en"
-                      ? "bg-theme-accent text-theme-accent-foreground"
-                      : "text-theme-text-muted hover:text-theme-text-primary"
-                  )}
+                      ? { background: "rgba(0,212,255,0.15)", color: "#00d4ff" }
+                      : { color: "#7a8aa0" }
+                  }
                 >
                   EN
                 </button>
                 <button
                   type="button"
                   onClick={() => setLanguage("tr")}
-                  className={cn(
-                    "px-3 py-1.5 rounded-md text-sm font-medium transition-all",
+                  className={cn("px-3 py-1.5 rounded-md text-sm font-medium transition-all")}
+                  style={
                     language === "tr"
-                      ? "bg-theme-accent text-theme-accent-foreground"
-                      : "text-theme-text-muted hover:text-theme-text-primary"
-                  )}
+                      ? { background: "rgba(0,212,255,0.15)", color: "#00d4ff" }
+                      : { color: "#7a8aa0" }
+                  }
                 >
                   TR
                 </button>
@@ -158,17 +183,26 @@ export default function SettingsView() {
             </div>
 
             {/* Theme */}
-            <div className="rounded-2xl bg-theme-surface-elevated border border-theme-border p-4 flex items-center justify-between">
+            <div
+              className="rounded-xl p-4 flex items-center justify-between"
+              style={{
+                background: "rgba(255,255,255,0.02)",
+                border: "1px solid rgba(255,255,255,0.07)",
+              }}
+            >
               <div className="flex items-center gap-3">
-                <div className="w-9 h-9 rounded-lg bg-purple-500/10 flex items-center justify-center text-purple-500">
+                <div
+                  className="w-9 h-9 rounded-lg flex items-center justify-center"
+                  style={{ background: "rgba(0,212,255,0.08)", color: "#00d4ff" }}
+                >
                   <Moon className="hidden dark:block" size={18} />
                   <Sun className="block dark:hidden" size={18} />
                 </div>
                 <div>
-                  <h4 className="font-medium text-theme-text-primary text-sm">
+                  <h4 className="font-medium text-sm" style={{ color: "#e8edf5" }}>
                     {t("theme")}
                   </h4>
-                  <p className="text-xs text-theme-text-muted">
+                  <p className="text-xs" style={{ color: "#7a8aa0" }}>
                     {t("toggle_theme")}
                   </p>
                 </div>
@@ -177,13 +211,16 @@ export default function SettingsView() {
                 type="button"
                 onClick={handleThemeToggle}
                 aria-label="Toggle Theme"
-                className={cn(
-                  "w-12 h-6 rounded-full p-1 transition-all duration-500",
-                  theme === "light" ? "bg-theme-accent" : "bg-theme-text-muted/30"
-                )}
+                className="w-12 h-6 rounded-full p-1 transition-all duration-500"
+                style={
+                  theme === "light"
+                    ? { background: "rgba(0,212,255,0.3)" }
+                    : { background: "rgba(255,255,255,0.08)" }
+                }
               >
                 <motion.div
-                  className="w-4 h-4 rounded-full bg-theme-surface-elevated shadow-md border border-theme-border"
+                  className="w-4 h-4 rounded-full shadow-md border"
+                  style={{ background: "#e8edf5", borderColor: "rgba(255,255,255,0.15)" }}
                   animate={{ x: theme === "light" ? 24 : 0 }}
                   transition={{
                     type: "spring",
@@ -251,8 +288,14 @@ export default function SettingsView() {
           </TabsContent>
 
           <TabsContent value="medical" className="m-0">
-            <div className="rounded-2xl bg-theme-surface-elevated border border-theme-border p-5">
-              <p className="text-xs text-theme-text-muted mb-4">
+            <div
+              className="rounded-xl p-5"
+              style={{
+                background: "rgba(255,255,255,0.02)",
+                border: "1px solid rgba(255,255,255,0.07)",
+              }}
+            >
+              <p className="text-xs font-mono mb-4" style={{ color: "#7a8aa0" }}>
                 {isTr
                   ? "Kayıtlı tıbbi bilgileriniz yükleme öncesi kullanılır ve rapor kalitesini artırır."
                   : "Your saved medical information is used before upload and improves report quality."}
@@ -270,17 +313,26 @@ export default function SettingsView() {
           </TabsContent>
 
           <TabsContent value="notifications" className="m-0">
-            <div className="rounded-2xl bg-theme-surface-elevated border border-theme-border p-4 space-y-4">
+            <div
+              className="rounded-xl p-4 space-y-4"
+              style={{
+                background: "rgba(255,255,255,0.02)",
+                border: "1px solid rgba(255,255,255,0.07)",
+              }}
+            >
               <div className="flex items-center justify-between">
                 <div className="flex items-center gap-3">
-                  <div className="w-9 h-9 rounded-lg bg-theme-accent/10 flex items-center justify-center text-theme-accent">
+                  <div
+                    className="w-9 h-9 rounded-lg flex items-center justify-center"
+                    style={{ background: "rgba(0,212,255,0.08)", color: "#00d4ff" }}
+                  >
                     <Mail size={18} />
                   </div>
                   <div>
-                    <h4 className="font-medium text-theme-text-primary text-sm">
+                    <h4 className="font-medium text-sm" style={{ color: "#e8edf5" }}>
                       {t("marketing_emails")}
                     </h4>
-                    <p className="text-xs text-theme-text-muted">
+                    <p className="text-xs" style={{ color: "#7a8aa0" }}>
                       {t("marketing_emails_desc")}
                     </p>
                   </div>
@@ -288,36 +340,38 @@ export default function SettingsView() {
                 <button
                   type="button"
                   onClick={() => handlePreferenceToggle("marketingEmails")}
-                  className={cn(
-                    "w-11 h-6 rounded-full p-1 transition-colors duration-200",
+                  className="w-11 h-6 rounded-full p-1 transition-colors duration-200"
+                  style={
                     preferences.marketingEmails
-                      ? "bg-theme-accent"
-                      : "bg-theme-text-muted/30"
-                  )}
+                      ? { background: "rgba(0,212,255,0.3)" }
+                      : { background: "rgba(255,255,255,0.08)" }
+                  }
                 >
                   <div
                     className={cn(
-                      "w-4 h-4 rounded-full bg-theme-surface-elevated border border-theme-border shadow-sm transform transition-transform duration-200",
-                      preferences.marketingEmails
-                        ? "translate-x-5"
-                        : "translate-x-0"
+                      "w-4 h-4 rounded-full border shadow-sm transform transition-transform duration-200",
+                      preferences.marketingEmails ? "translate-x-5" : "translate-x-0"
                     )}
+                    style={{ background: "#e8edf5", borderColor: "rgba(255,255,255,0.15)" }}
                   />
                 </button>
               </div>
 
-              <div className="w-full h-px bg-theme-border" />
+              <div className="w-full h-px" style={{ background: "rgba(255,255,255,0.06)" }} />
 
               <div className="flex items-center justify-between">
                 <div className="flex items-center gap-3">
-                  <div className="w-9 h-9 rounded-lg bg-theme-danger/10 flex items-center justify-center text-theme-danger">
+                  <div
+                    className="w-9 h-9 rounded-lg flex items-center justify-center"
+                    style={{ background: "rgba(255,68,102,0.08)", color: "#ff4466" }}
+                  >
                     <Shield size={18} />
                   </div>
                   <div>
-                    <h4 className="font-medium text-theme-text-primary text-sm">
+                    <h4 className="font-medium text-sm" style={{ color: "#e8edf5" }}>
                       {t("critical_alerts")}
                     </h4>
-                    <p className="text-xs text-theme-text-muted">
+                    <p className="text-xs" style={{ color: "#7a8aa0" }}>
                       {t("security_alerts_desc")}
                     </p>
                   </div>
@@ -325,20 +379,19 @@ export default function SettingsView() {
                 <button
                   type="button"
                   onClick={() => handlePreferenceToggle("criticalAlerts")}
-                  className={cn(
-                    "w-11 h-6 rounded-full p-1 transition-colors duration-200",
+                  className="w-11 h-6 rounded-full p-1 transition-colors duration-200"
+                  style={
                     preferences.criticalAlerts
-                      ? "bg-theme-accent"
-                      : "bg-theme-text-muted/30"
-                  )}
+                      ? { background: "rgba(0,212,255,0.3)" }
+                      : { background: "rgba(255,255,255,0.08)" }
+                  }
                 >
                   <div
                     className={cn(
-                      "w-4 h-4 rounded-full bg-theme-surface-elevated border border-theme-border shadow-sm transform transition-transform duration-200",
-                      preferences.criticalAlerts
-                        ? "translate-x-5"
-                        : "translate-x-0"
+                      "w-4 h-4 rounded-full border shadow-sm transform transition-transform duration-200",
+                      preferences.criticalAlerts ? "translate-x-5" : "translate-x-0"
                     )}
+                    style={{ background: "#e8edf5", borderColor: "rgba(255,255,255,0.15)" }}
                   />
                 </button>
               </div>

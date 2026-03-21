@@ -27,6 +27,8 @@ import { selectBestSlices } from "@/lib/ai/sliceSelector";
 import type { PerImageIntakeResult } from "@/lib/ai/intakePrompts";
 import type { DomainRoute, ClassificationResult } from "@/lib/ai/promptRouter";
 import { ANTHROPIC_CONFIG } from "@/lib/anthropicConfig";
+import { VERTEX_CONFIG } from "@/lib/vertexConfig";
+import { loadRuntimeConfig } from "@/lib/runtimeConfig";
 import { applyContradictionGuards } from "@/lib/reportContradictionGuard";
 
 export const runtime = "nodejs";
@@ -400,8 +402,9 @@ JSON SCHEMA:
 async function runClaudeVisionFallback(params: {
   preparedImages: PreparedImage[];
   language: "tr" | "en";
+  anthropicModel: string;
 }): Promise<{ result: FinalResponse; usedFallback: true } | null> {
-  const { preparedImages, language } = params;
+  const { preparedImages, language, anthropicModel } = params;
   const prompt = language === "tr" ? FALLBACK_VISION_PROMPT_TR : FALLBACK_VISION_PROMPT_EN;
 
   const content: Array<
@@ -421,7 +424,7 @@ async function runClaudeVisionFallback(params: {
 
   try {
     const msg = await anthropic.messages.create({
-      model: ANTHROPIC_CONFIG.model,
+      model: anthropicModel,
       max_tokens: 3000,
       system: getSynthesisSystemPrompt(language),
       messages: [{ role: "user", content }],
@@ -846,6 +849,12 @@ export async function POST(req: Request) {
   };
 
   (async () => {
+    const runtimeConfig = await loadRuntimeConfig();
+    const activeAnthropicModel =
+      runtimeConfig.anthropicModel || ANTHROPIC_CONFIG.model;
+    const activeVertexModel =
+      runtimeConfig.vertexModel || VERTEX_CONFIG.extractionModel;
+    void activeVertexModel;
     const phaseStart = Date.now();
     const uploadId = `img-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
     const traceCheckpoints: Array<{ step: string; status: string; durationMs: number; counts?: Record<string, number> }> = [];
@@ -1245,6 +1254,7 @@ export async function POST(req: Request) {
         });
 
         const claudeFallback = await runClaudeVisionFallback({
+          anthropicModel: activeAnthropicModel,
           preparedImages,
           language,
         });
@@ -1459,7 +1469,7 @@ export async function POST(req: Request) {
 
       try {
         const msg = await anthropic.messages.create({
-          model: ANTHROPIC_CONFIG.model,
+          model: activeAnthropicModel,
           max_tokens: 4000,
           system: getSynthesisSystemPrompt(language),
           messages: [{ role: "user", content: synthesisUserMessage }],

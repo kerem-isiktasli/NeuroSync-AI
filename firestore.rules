@@ -1,12 +1,12 @@
 rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
-    // Users collection (terms acceptance) - user can read/write own doc
+
     match /users/{userId} {
-      allow read, write: if request.auth != null && request.auth.uid == userId;
+      allow read, write: if request.auth != null
+        && request.auth.uid == userId;
     }
 
-    // Analysis intakes — per-report intake data, user can CRUD own
     match /analysisIntakes/{intakeId} {
       allow create: if request.auth != null
         && request.resource.data.userId == request.auth.uid;
@@ -14,7 +14,6 @@ service cloud.firestore {
         && resource.data.userId == request.auth.uid;
     }
 
-    // Reports collection - authenticated users can CRUD only their own reports
     match /reports/{reportId} {
       allow create: if request.auth != null
         && request.resource.data.userId == request.auth.uid;
@@ -22,13 +21,12 @@ service cloud.firestore {
         && resource.data.userId == request.auth.uid;
     }
 
-    // Roles - role === "admin" is source of truth for admin access. Add via Firebase Console.
     match /roles/{userId} {
-      allow read: if request.auth != null && request.auth.uid == userId;
+      allow read: if request.auth != null
+        && request.auth.uid == userId;
       allow write: if false;
     }
 
-    // Config - readable by auth users, writable only by admins (roles/{uid}.role == "admin")
     match /config/{docId} {
       allow read: if request.auth != null;
       allow write: if request.auth != null
@@ -36,14 +34,74 @@ service cloud.firestore {
         && get(/databases/$(database)/documents/roles/$(request.auth.uid)).data.role == 'admin';
     }
 
-    // Config history - same as config
     match /config_history/{docId} {
+      allow read, write: if request.auth != null
+        && exists(/databases/$(database)/documents/roles/$(request.auth.uid))
+        && get(/databases/$(database)/documents/roles/$(request.auth.uid)).data.role == 'admin';
+    }
+
+    match /credits/{userId} {
       allow read: if request.auth != null
-        && exists(/databases/$(database)/documents/roles/$(request.auth.uid))
-        && get(/databases/$(database)/documents/roles/$(request.auth.uid)).data.role == 'admin';
+        && request.auth.uid == userId;
+      allow write: if false;
+    }
+
+    match /supportRoles/{userId} {
+      allow read: if request.auth != null
+        && request.auth.uid == userId;
+      allow write: if false;
+    }
+
+    function isSupport() {
+      return request.auth != null && (
+        (exists(/databases/$(database)/documents/supportRoles/$(request.auth.uid))
+          && get(/databases/$(database)/documents/supportRoles/$(request.auth.uid)).data.role == 'support')
+        ||
+        (exists(/databases/$(database)/documents/roles/$(request.auth.uid))
+          && get(/databases/$(database)/documents/roles/$(request.auth.uid)).data.role == 'admin')
+      );
+    }
+
+    match /supportTickets/{ticketId} {
+      allow create: if request.auth != null
+        && request.resource.data.patientUid == request.auth.uid;
+      allow read: if request.auth != null
+        && (resource.data.patientUid == request.auth.uid || isSupport());
+      allow update: if request.auth != null
+        && (
+          (resource.data.patientUid == request.auth.uid
+            && request.resource.data.diff(resource.data).affectedKeys()
+              .hasOnly(['patientUnread', 'updatedAt']))
+          || isSupport()
+        );
+      allow delete: if false;
+    }
+
+    match /supportTickets/{ticketId}/messages/{msgId} {
+      allow read: if request.auth != null
+        && (
+          get(/databases/$(database)/documents/supportTickets/$(ticketId)).data.patientUid == request.auth.uid
+          || isSupport()
+        );
+      allow create: if request.auth != null
+        && request.resource.data.senderUid == request.auth.uid
+        && (
+          get(/databases/$(database)/documents/supportTickets/$(ticketId)).data.patientUid == request.auth.uid
+          || isSupport()
+        );
+      allow update, delete: if false;
+    }
+
+    match /supportPresence/{userId} {
+      allow read: if request.auth != null && isSupport();
       allow write: if request.auth != null
-        && exists(/databases/$(database)/documents/roles/$(request.auth.uid))
-        && get(/databases/$(database)/documents/roles/$(request.auth.uid)).data.role == 'admin';
+        && request.auth.uid == userId;
+    }
+
+    match /notifications/{userId}/items/{notifId} {
+      allow read, update: if request.auth != null
+        && request.auth.uid == userId;
+      allow write: if false;
     }
   }
 }

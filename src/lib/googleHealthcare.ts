@@ -33,6 +33,7 @@ import {
   type IntakeImagePlane,
 } from './ai/intakePrompts';
 import { VERTEX_CONFIG, getVertexEndpoint } from './vertexConfig';
+import { loadRuntimeConfig } from './runtimeConfig';
 import {
   getStructuredReconciliationPrompt,
   parseStructuredReconciliation,
@@ -208,7 +209,7 @@ export class VertexImageService {
   }
 
   private async callGemini(params: {
-    model: string;
+    model?: string;
     prompt: string;
     imageBase64: string;
     token: string;
@@ -216,9 +217,12 @@ export class VertexImageService {
     maxTokens: number;
   }): Promise<string> {
     const { model, prompt, imageBase64, token, signal, maxTokens } = params;
-    const endpoint = getVertexEndpoint(model);
+    const runtimeConfig = await loadRuntimeConfig();
+    const activeModel =
+      model || runtimeConfig.vertexModel || VERTEX_CONFIG.extractionModel;
+    const endpoint = getVertexEndpoint(activeModel);
     if (process.env.NODE_ENV !== "production") {
-      console.log(`[VertexImage] Calling model=${model}, endpoint=${endpoint}`);
+      console.log(`[VertexImage] Calling model=${activeModel}, endpoint=${endpoint}`);
     }
 
     const body = {
@@ -251,15 +255,15 @@ export class VertexImageService {
     );
 
     if (response.status === 403) {
-      console.error(`[VertexImage] IAM 403 on model ${model}`);
+      console.error(`[VertexImage] IAM 403 on model ${activeModel}`);
       throw new VertexHttpError(403, response.statusText);
     }
 
     if (!response.ok) {
       const errText = await response.text().catch(() => "");
-      console.error(`[VertexImage] HTTP ${response.status} on model=${model}, endpoint=${endpoint}:`, errText?.slice(0, 400));
+      console.error(`[VertexImage] HTTP ${response.status} on model=${activeModel}, endpoint=${endpoint}:`, errText?.slice(0, 400));
       if (response.status === 404) {
-        console.error(`[VertexImage] Model 404 — "${model}" not found. Use VERTEX_MODEL env to override. Valid models: gemini-2.5-flash, gemini-2.5-pro`);
+        console.error(`[VertexImage] Model 404 — "${activeModel}" not found. Use VERTEX_MODEL env to override. Valid models: gemini-2.5-flash, gemini-2.5-pro`);
       }
       throw new VertexHttpError(response.status, response.statusText, errText);
     }
@@ -275,8 +279,10 @@ export class VertexImageService {
     maxTokens: number;
   }): Promise<string> {
     const { prompt, token, signal, maxTokens } = params;
-    const model = VERTEX_CONFIG.extractionModel;
-    const endpoint = getVertexEndpoint(model);
+    const runtimeConfig = await loadRuntimeConfig();
+    const activeModel =
+      runtimeConfig.vertexModel || VERTEX_CONFIG.extractionModel;
+    const endpoint = getVertexEndpoint(activeModel);
 
     const body = {
       contents: [{ role: "user", parts: [{ text: prompt }] }],
@@ -417,7 +423,6 @@ export class VertexImageService {
     try {
       const prompt = getReportOcrPrompt(language);
       const raw = await this.callGemini({
-        model: VERTEX_CONFIG.extractionModel,
         prompt,
         imageBase64: rawBase64,
         token,
@@ -480,7 +485,6 @@ Return ONLY valid JSON: { "text": "concatenated extracted text" }`;
 
     try {
       const raw = await this.callGemini({
-        model: VERTEX_CONFIG.extractionModel,
         prompt,
         imageBase64: rawBase64,
         token,
@@ -793,7 +797,6 @@ Return ONLY valid JSON: { "text": "concatenated extracted text" }`;
 
     try {
       const raw = await this.callGemini({
-        model: VERTEX_CONFIG.extractionModel,
         prompt,
         imageBase64: rawBase64 ?? imageBase64,
         token: resolvedToken,
@@ -871,7 +874,6 @@ Return ONLY valid JSON: { "text": "concatenated extracted text" }`;
 
     try {
       const raw = await this.callGemini({
-        model: VERTEX_CONFIG.extractionModel,
         prompt,
         imageBase64: rawBase64,
         token,
@@ -974,10 +976,10 @@ Return ONLY valid JSON: { "text": "concatenated extracted text" }`;
       const prompt = getDomainPrompt(domainRoute, language);
 
       let raw: string;
-      let model = VERTEX_CONFIG.extractionModel;
+      const runtimeConfig = await loadRuntimeConfig();
+      let model = runtimeConfig.vertexModel || VERTEX_CONFIG.extractionModel;
 
       raw = await this.callGemini({
-        model: VERTEX_CONFIG.extractionModel,
         prompt,
         imageBase64,
         token,

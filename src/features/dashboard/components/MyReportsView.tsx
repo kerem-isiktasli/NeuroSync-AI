@@ -82,12 +82,19 @@ export default function MyReportsView({ onOpenReport }: { onOpenReport?: (report
   const isIndexError = reportsError?.message?.toLowerCase().includes("index") ?? false;
 
   return (
-    <div className="h-full flex flex-col p-6 space-y-5">
+    <div className="h-full flex flex-col p-6 space-y-5" style={{ color: "#e8edf5" }}>
       {reportsError && (
-        <div className="rounded-xl border border-amber-500/30 bg-amber-500/10 px-4 py-3 flex items-start gap-2.5 text-sm">
-          <AlertTriangle className="w-4 h-4 text-amber-500 shrink-0 mt-0.5" />
+        <div
+          className="rounded-xl px-4 py-3 flex items-start gap-2.5 text-sm"
+          style={{
+            background: "rgba(255,170,0,0.06)",
+            border: "1px solid rgba(255,170,0,0.2)",
+            color: "#ffaa00",
+          }}
+        >
+          <AlertTriangle className="w-4 h-4 shrink-0 mt-0.5" />
           <div>
-            <p className="font-medium text-amber-200">
+            <p className="font-medium">
               {isPermissionError
                 ? language === "tr"
                   ? "Raporlar yüklenemedi — yetki hatası."
@@ -100,7 +107,7 @@ export default function MyReportsView({ onOpenReport }: { onOpenReport?: (report
                     ? "Raporlar yüklenemedi."
                     : "Reports could not be loaded."}
             </p>
-            <p className="text-xs text-amber-200/80 mt-0.5">
+            <p className="text-xs mt-0.5 opacity-90">
               {isPermissionError
                 ? "firebase deploy --only firestore:rules"
                 : isIndexError
@@ -112,8 +119,10 @@ export default function MyReportsView({ onOpenReport }: { onOpenReport?: (report
       )}
       <header className="flex items-center justify-between">
         <div>
-          <h2 className="text-2xl font-bold text-theme-text-primary">{t("my_reports")}</h2>
-          <p className="text-sm text-theme-text-secondary">
+          <h2 className="text-2xl font-bold" style={{ color: "#e8edf5" }}>
+            {t("my_reports")}
+          </h2>
+          <p className="text-sm font-mono mt-0.5" style={{ color: "#7a8aa0" }}>
             {language === "tr"
               ? `${reports.length} rapor${reports.length !== 1 ? "" : ""}`
               : `${reports.length} report${reports.length !== 1 ? "s" : ""}`}
@@ -125,16 +134,29 @@ export default function MyReportsView({ onOpenReport }: { onOpenReport?: (report
       {reports.length > 0 && (
         <div className="flex gap-3">
           <div className="flex-1 relative">
-            <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-theme-text-muted" size={16} />
+            <Search className="absolute left-3 top-1/2 -translate-y-1/2" size={16} style={{ color: "#3d4f66" }} />
             <input
               type="text"
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
               placeholder={t("search_reports")}
-              className="w-full pl-9 pr-4 py-2 bg-theme-surface-elevated border border-theme-border rounded-xl text-sm text-theme-text-primary placeholder:text-theme-text-muted focus:outline-none focus:border-theme-focus-ring transition-colors"
+              className="w-full pl-9 pr-4 py-2.5 rounded-xl text-sm transition-all outline-none focus:border-[rgba(0,212,255,0.4)]"
+              style={{
+                background: "rgba(255,255,255,0.04)",
+                border: "1px solid rgba(255,255,255,0.08)",
+                color: "#e8edf5",
+              }}
             />
           </div>
-          <button className="px-3.5 py-2 bg-theme-surface-elevated border border-theme-border rounded-xl text-theme-text-secondary hover:text-theme-text-primary transition-colors flex items-center gap-2 text-sm">
+          <button
+            type="button"
+            className="px-3.5 py-2 rounded-xl flex items-center gap-2 text-sm transition-all"
+            style={{
+              background: "rgba(255,255,255,0.03)",
+              border: "1px solid rgba(255,255,255,0.07)",
+              color: "#7a8aa0",
+            }}
+          >
             <Filter size={15} />
             <span>{t("filter")}</span>
           </button>
@@ -145,8 +167,13 @@ export default function MyReportsView({ onOpenReport }: { onOpenReport?: (report
       {loading && (
         <div className="flex-1 flex items-center justify-center">
           <div className="flex flex-col items-center gap-3">
-            <div className="w-10 h-10 border-3 border-theme-accent/30 border-t-theme-accent rounded-full animate-spin" />
-            <p className="text-sm text-theme-text-muted">{language === "tr" ? "Raporlar yükleniyor..." : "Loading reports..."}</p>
+            <div
+              className="w-10 h-10 border-4 border-white/10 rounded-full animate-spin"
+              style={{ borderTopColor: "#00d4ff", boxShadow: "0 0 16px rgba(0,212,255,0.25)" }}
+            />
+            <p className="text-sm font-mono" style={{ color: "#7a8aa0" }}>
+              {language === "tr" ? "Raporlar yükleniyor..." : "Loading reports..."}
+            </p>
           </div>
         </div>
       )}
@@ -154,12 +181,23 @@ export default function MyReportsView({ onOpenReport }: { onOpenReport?: (report
       {/* Empty State */}
       {!loading && reports.length === 0 && (
         <div className="flex-1 flex flex-col items-center justify-center text-center">
-          <div className="w-14 h-14 rounded-2xl bg-theme-accent/10 border border-theme-accent/20 flex items-center justify-center mb-4">
-            <FileText className="text-theme-accent" size={24} />
+          <div
+            className="w-16 h-16 rounded-2xl flex items-center justify-center mb-5"
+            style={{
+              background: "rgba(0,212,255,0.06)",
+              border: "1px solid rgba(0,212,255,0.2)",
+              boxShadow: "0 0 20px rgba(0,212,255,0.1)",
+            }}
+          >
+            <FileText size={24} style={{ color: "#00d4ff" }} />
           </div>
-          <h3 className="text-lg font-semibold text-theme-text-primary mb-2">{t("no_reports_yet")}</h3>
-          <p className="text-sm text-theme-text-secondary max-w-sm mb-1">{t("no_reports_desc")}</p>
-          <p className="text-xs text-theme-text-muted">
+          <h3 className="text-lg font-semibold mb-2" style={{ color: "#e8edf5" }}>
+            {t("no_reports_yet")}
+          </h3>
+          <p className="text-sm max-w-sm mb-1" style={{ color: "#7a8aa0" }}>
+            {t("no_reports_desc")}
+          </p>
+          <p className="text-xs" style={{ color: "#3d4f66" }}>
             {language === "tr"
               ? "Dashboard'dan bir tarama yükleyerek ilk raporunuzu oluşturun."
               : "Upload a scan from the Dashboard to create your first report."}
@@ -188,8 +226,8 @@ export default function MyReportsView({ onOpenReport }: { onOpenReport?: (report
       {/* Search no results */}
       {!loading && reports.length > 0 && filtered.length === 0 && searchQuery && (
         <div className="flex-1 flex flex-col items-center justify-center text-center">
-          <Search className="w-10 h-10 text-theme-text-muted mb-3 opacity-40" />
-          <p className="text-sm text-theme-text-muted">
+          <Search className="w-10 h-10 mb-3 opacity-40" style={{ color: "#3d4f66" }} />
+          <p className="text-sm" style={{ color: "#7a8aa0" }}>
             {language === "tr" ? "Aramanızla eşleşen rapor bulunamadı." : "No reports matching your search."}
           </p>
         </div>
@@ -217,6 +255,40 @@ function ReportCard({
   const concern = report.concernLevel ? CONCERN_CONFIG[report.concernLevel] : null;
   const ConcernIcon = concern?.icon ?? Shield;
 
+  const statusBadgeStyle =
+    report.status === "complete"
+      ? {
+          background: "rgba(0,255,136,0.08)",
+          color: "#00ff88",
+          border: "1px solid rgba(0,255,136,0.2)",
+        }
+      : report.status === "processing"
+        ? {
+            background: "rgba(255,170,0,0.08)",
+            color: "#ffaa00",
+            border: "1px solid rgba(255,170,0,0.2)",
+          }
+        : report.status === "failed"
+          ? {
+              background: "rgba(255,68,102,0.08)",
+              color: "#ff4466",
+              border: "1px solid rgba(255,68,102,0.2)",
+            }
+          : {
+              background: "rgba(0,212,255,0.08)",
+              color: "#00d4ff",
+              border: "1px solid rgba(0,212,255,0.2)",
+            };
+
+  const concernTextStyle =
+    report.concernLevel === "urgent-review"
+      ? { color: "#ff4466" }
+      : report.concernLevel === "high"
+        ? { color: "#ffaa00" }
+        : report.concernLevel === "moderate"
+          ? { color: "#00d4ff" }
+          : { color: "#00ff88" };
+
   return (
     <motion.div
       layout
@@ -224,22 +296,37 @@ function ReportCard({
       animate={{ opacity: 1, y: 0 }}
       exit={{ opacity: 0, x: -20, transition: { duration: 0.2 } }}
       onClick={onOpen}
-      className="group relative flex items-start gap-3.5 p-4 rounded-xl border border-theme-border bg-theme-surface hover:bg-theme-surface-elevated cursor-pointer transition-all hover:border-theme-accent/20"
+      className="group relative flex items-start gap-3.5 p-4 rounded-xl cursor-pointer transition-all hover:border-[rgba(0,212,255,0.25)] hover:bg-[rgba(0,212,255,0.03)]"
+      style={{
+        background: "rgba(255,255,255,0.02)",
+        border: "1px solid rgba(255,255,255,0.07)",
+      }}
     >
       {/* Icon */}
-      <div className="w-10 h-10 rounded-xl bg-theme-accent/10 border border-theme-accent/20 flex items-center justify-center shrink-0 mt-0.5">
+      <div
+        className="w-10 h-10 rounded-xl flex items-center justify-center shrink-0 mt-0.5"
+        style={{
+          background: "rgba(0,212,255,0.08)",
+          border: "1px solid rgba(0,212,255,0.2)",
+        }}
+      >
         {report.status === "processing" ? (
-          <Activity className="w-4.5 h-4.5 text-theme-accent animate-pulse" />
+          <Activity className="w-4 h-4 animate-pulse" style={{ color: "#00d4ff" }} />
         ) : (
-          <FileText className="w-4.5 h-4.5 text-theme-accent" />
+          <FileText className="w-4 h-4" style={{ color: "#00d4ff" }} />
         )}
       </div>
 
       {/* Content */}
       <div className="flex-1 min-w-0">
         <div className="flex items-center gap-2 mb-0.5 flex-wrap">
-          <h4 className="text-sm font-semibold text-theme-text-primary truncate">{report.title || report.fileName}</h4>
-          <span className={`px-1.5 py-0.5 rounded text-[9px] font-bold uppercase tracking-wider ${status.color}`}>
+          <h4 className="text-sm font-semibold truncate" style={{ color: "#e8edf5" }}>
+            {report.title || report.fileName}
+          </h4>
+          <span
+            className="px-2 py-0.5 rounded-full text-[9px] font-mono font-bold uppercase tracking-wider"
+            style={statusBadgeStyle}
+          >
             {language === "tr" ? status.labelTr : status.label}
           </span>
           {report.reportMode && (
@@ -266,24 +353,31 @@ function ReportCard({
         </div>
 
         {report.summary && (
-          <p className="text-xs text-theme-text-secondary line-clamp-1">{report.summary}</p>
+          <p className="text-xs line-clamp-1" style={{ color: "#7a8aa0" }}>
+            {report.summary}
+          </p>
         )}
 
         {report.status === "failed" && report.errorMessage && (
-          <p className="text-xs text-red-400 mt-1 line-clamp-1">{report.errorMessage}</p>
+          <p className="text-xs mt-1 line-clamp-1" style={{ color: "#ff4466" }}>
+            {report.errorMessage}
+          </p>
         )}
       </div>
 
       {/* Right side */}
       <div className="flex items-center gap-2 shrink-0 self-center">
         {concern && report.status === "complete" && (
-          <span className={`flex items-center gap-1 text-[10px] font-semibold ${concern.color}`}>
+          <span className="flex items-center gap-1 text-[10px] font-semibold" style={concernTextStyle}>
             <ConcernIcon className="w-3 h-3" />
             {language === "tr" ? concern.labelTr : concern.label}
           </span>
         )}
         {report.keyFindings?.length > 0 && (
-          <span className="text-[10px] text-theme-text-muted bg-theme-surface-elevated px-1.5 py-0.5 rounded">
+          <span
+            className="text-[10px] px-1.5 py-0.5 rounded"
+            style={{ color: "#3d4f66", background: "rgba(255,255,255,0.04)" }}
+          >
             {report.keyFindings.length} {language === "tr" ? "bulgu" : "findings"}
           </span>
         )}
@@ -295,7 +389,7 @@ function ReportCard({
               e.stopPropagation();
               onOpen();
             }}
-            className="p-1.5 rounded-lg hover:bg-theme-accent/10 text-theme-text-muted hover:text-theme-accent transition-colors"
+            className="p-1.5 rounded-lg transition-colors text-[#7a8aa0] hover:text-[#00d4ff] hover:bg-[rgba(0,212,255,0.08)]"
             title={language === "tr" ? "Aç" : "Open"}
           >
             <ExternalLink size={14} />
@@ -303,11 +397,14 @@ function ReportCard({
           <button
             onClick={onDelete}
             disabled={isDeleting}
-            className="p-1.5 rounded-lg hover:bg-red-500/10 text-theme-text-muted hover:text-red-400 transition-colors disabled:opacity-50"
+            className="p-1.5 rounded-lg transition-colors text-[#7a8aa0] hover:text-[#ff4466] hover:bg-[rgba(255,68,102,0.08)] disabled:opacity-50"
             title={language === "tr" ? "Sil" : "Delete"}
           >
             {isDeleting ? (
-              <div className="w-3.5 h-3.5 border-2 border-red-400/30 border-t-red-400 rounded-full animate-spin" />
+              <div
+                className="w-3.5 h-3.5 border-2 rounded-full animate-spin"
+                style={{ borderColor: "rgba(255,68,102,0.3)", borderTopColor: "#ff4466" }}
+              />
             ) : (
               <Trash2 size={14} />
             )}

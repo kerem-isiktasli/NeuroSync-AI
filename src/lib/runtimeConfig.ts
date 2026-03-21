@@ -51,19 +51,6 @@ const DEFAULTS: RuntimeConfig = {
   schemaVersion: "1.0",
 };
 
-const VALID_MODELS = new Set([
-  "gemini-2.5-flash",
-  "gemini-2.5-pro",
-  "gemini-2.0-flash",
-  "gemini-1.5-pro",
-  "gemini-1.5-flash",
-  "claude-sonnet-4-6",
-  "claude-sonnet-4-5",
-  "claude-sonnet-4-20250514",
-  "claude-3-5-sonnet-20241022",
-  "claude-haiku-4-5",
-]);
-
 function validateAndMerge(config: Partial<RuntimeConfig>): RuntimeConfig {
   const merged = { ...DEFAULTS, ...config };
   if (merged.maxImages < 1 || merged.maxImages > 100) merged.maxImages = DEFAULTS.maxImages;
@@ -73,15 +60,21 @@ function validateAndMerge(config: Partial<RuntimeConfig>): RuntimeConfig {
   if (merged.classificationConfidenceThreshold < 0 || merged.classificationConfidenceThreshold > 100) {
     merged.classificationConfidenceThreshold = DEFAULTS.classificationConfidenceThreshold;
   }
-  if (!VALID_MODELS.has(merged.vertexModel)) merged.vertexModel = DEFAULTS.vertexModel;
-  if (!VALID_MODELS.has(merged.vertexFallbackModel)) merged.vertexFallbackModel = DEFAULTS.vertexFallbackModel;
-  if (!VALID_MODELS.has(merged.anthropicModel)) merged.anthropicModel = DEFAULTS.anthropicModel;
+  // Warn on unknown models but don't revert — admin knows what they're doing
+  if (merged.vertexModel && merged.vertexModel.trim().length < 3) {
+    console.warn("[RuntimeConfig] vertexModel looks invalid:", merged.vertexModel);
+    merged.vertexModel = DEFAULTS.vertexModel;
+  }
+  if (merged.anthropicModel && merged.anthropicModel.trim().length < 3) {
+    console.warn("[RuntimeConfig] anthropicModel looks invalid:", merged.anthropicModel);
+    merged.anthropicModel = DEFAULTS.anthropicModel;
+  }
   return merged;
 }
 
 let cached: RuntimeConfig | null = null;
 let cachedAt = 0;
-const CACHE_TTL_MS = 60_000; // 1 min
+const CACHE_TTL_MS = 10_000; // 10 seconds
 
 /**
  * Load runtime config. Tries Firestore first, falls back to env/defaults.

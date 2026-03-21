@@ -9,132 +9,197 @@ import React, {
   useMemo,
   type ReactNode,
 } from "react";
-import { useBilling } from "./BillingContext";
+import { auth } from "@/lib/firebase";
+import { onAuthStateChanged } from "firebase/auth";
 
-const STORAGE_KEY = "neurosync_credits";
-
-/** Credits per plan (single pool). Free: 3 (test), analysis costs 2, chat costs 1. */
-const CREDITS_BY_PLAN: Record<string, number> = {
-  free: 3,
-  pro: 100,
-  enterprise: 500,
-};
-
-const ANALYSIS_COST = 2;
-const CHAT_COST = 1;
+export interface TokenBalances {
+  reportTokens: number;
+  agentTokens: number;
+  supportTokens: number;
+  reportTokensTotal: number;
+  agentTokensTotal: number;
+  supportTokensTotal: number;
+  reportTokensUsed: number;
+  agentTokensUsed: number;
+  supportTokensUsed: number;
+  plan: string;
+  resetAt: string;
+}
 
 interface CreditsContextType {
-  credits: number;
+  balances: TokenBalances;
+  loading: boolean;
   canAnalyze: boolean;
   canChat: boolean;
-  deductForAnalysis: () => void;
-  deductForChat: () => void;
-  refreshFromStorage: () => void;
-  /** Dev only: grant credits for testing. */
+  canSupport: boolean;
+  deductForAnalysis: () => Promise<boolean>;
+  deductForChat: () => Promise<boolean>;
+  deductForSupport: () => Promise<boolean>;
+  refreshCredits: () => Promise<void>;
+  credits: number;
+  /** Dev-only: bump local report tokens for testing (does not persist). */
   grantCreditsForTesting?: (amount: number) => void;
+}
+
+const DEFAULT_BALANCES: TokenBalances = {
+  reportTokens: 0,
+  agentTokens: 0,
+  supportTokens: 0,
+  reportTokensTotal: 3,
+  agentTokensTotal: 10,
+  supportTokensTotal: 5,
+  reportTokensUsed: 0,
+  agentTokensUsed: 0,
+  supportTokensUsed: 0,
+  plan: "free",
+  resetAt: "",
+};
+
+function normalizeApiPayload(raw: Record<string, unknown>): TokenBalances {
+  return {
+    reportTokens: typeof raw.reportTokens === "number" ? raw.reportTokens : DEFAULT_BALANCES.reportTokens,
+    agentTokens: typeof raw.agentTokens === "number" ? raw.agentTokens : DEFAULT_BALANCES.agentTokens,
+    supportTokens: typeof raw.supportTokens === "number" ? raw.supportTokens : DEFAULT_BALANCES.supportTokens,
+    reportTokensTotal:
+      typeof raw.reportTokensTotal === "number" ? raw.reportTokensTotal : DEFAULT_BALANCES.reportTokensTotal,
+    agentTokensTotal:
+      typeof raw.agentTokensTotal === "number" ? raw.agentTokensTotal : DEFAULT_BALANCES.agentTokensTotal,
+    supportTokensTotal:
+      typeof raw.supportTokensTotal === "number" ? raw.supportTokensTotal : DEFAULT_BALANCES.supportTokensTotal,
+    reportTokensUsed:
+      typeof raw.reportTokensUsed === "number" ? raw.reportTokensUsed : DEFAULT_BALANCES.reportTokensUsed,
+    agentTokensUsed:
+      typeof raw.agentTokensUsed === "number" ? raw.agentTokensUsed : DEFAULT_BALANCES.agentTokensUsed,
+    supportTokensUsed:
+      typeof raw.supportTokensUsed === "number" ? raw.supportTokensUsed : DEFAULT_BALANCES.supportTokensUsed,
+    plan: typeof raw.plan === "string" ? raw.plan : "free",
+    resetAt: typeof raw.resetAt === "string" ? raw.resetAt : "",
+  };
 }
 
 const CreditsContext = createContext<CreditsContextType | undefined>(undefined);
 
 export function CreditsProvider({ children }: { children: ReactNode }) {
-  const { billing } = useBilling();
-  const defaultCredits = CREDITS_BY_PLAN[billing.plan] ?? CREDITS_BY_PLAN.free;
+  const [balances, setBalances] = useState<TokenBalances>(DEFAULT_BALANCES);
+  const [loading, setLoading] = useState(true);
+  const [uid, setUid] = useState<string | null>(null);
 
-  const [credits, setCredits] = useState<number>(defaultCredits);
-  const [initialized, setInitialized] = useState(false);
-
-  const refreshFromStorage = useCallback(() => {
-    try {
-      const stored = localStorage.getItem(STORAGE_KEY);
-      if (stored) {
-        const parsed = JSON.parse(stored);
-        const num = typeof parsed === "number" ? parsed : typeof parsed === "object" && parsed != null
-          ? (parsed.upload ?? 0) + (parsed.query ?? 0)
-          : defaultCredits;
-        setCredits(Math.max(0, Math.floor(Number(num))));
-      } else {
-        setCredits(defaultCredits);
+  useEffect(() => {
+    const unsub = onAuthStateChanged(auth, (user) => {
+      setUid(user?.uid ?? null);
+      if (!user) {
+        setBalances(DEFAULT_BALANCES);
+        setLoading(false);
       }
-    } catch {
-      setCredits(defaultCredits);
+    });
+    return unsub;
+  }, []);
+
+  const refreshCredits = useCallback(async () => {
+    if (!uid) return;
+    try {
+      const user = auth.currentUser;
+      if (!user) return;
+      const token = await user.getIdToken();
+      const res = await fetch("/api/credits", {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (res.ok) {
+        const raw = (await res.json()) as Record<string, unknown>;
+        setBalances(normalizeApiPayload(raw));
+      }
+    } catch (err) {
+      console.error("[Credits] Failed to load:", err);
+    } finally {
+      setLoading(false);
     }
-    setInitialized(true);
-  }, [defaultCredits]);
+  }, [uid]);
 
   useEffect(() => {
-    refreshFromStorage();
-  }, [refreshFromStorage]);
+    if (uid) void refreshCredits();
+  }, [uid, refreshCredits]);
 
-  useEffect(() => {
-    if (!initialized) return;
+  const deduct = useCallback(async (type: "report" | "agent" | "support"): Promise<boolean> => {
+    const user = auth.currentUser;
+    if (!user) return false;
     try {
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(credits));
-    } catch {}
-  }, [credits, initialized]);
-
-  const deductForAnalysis = useCallback(() => {
-    setCredits((prev) => {
-      const next = Math.max(0, prev - ANALYSIS_COST);
-      if (process.env.NODE_ENV !== "production") {
-        console.log("[Credits] analysis:", { before: prev, deducted: prev - next, after: next, actionType: "analysis" });
+      const token = await user.getIdToken();
+      const res = await fetch("/api/credits", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({ type }),
+      });
+      if (res.ok) {
+        const data = (await res.json()) as { newBalance?: number };
+        const key = `${type}Tokens` as keyof TokenBalances;
+        const usedKey = `${type}TokensUsed` as keyof TokenBalances;
+        setBalances((prev) => ({
+          ...prev,
+          [key]: typeof data.newBalance === "number" ? data.newBalance : (prev[key] as number) - 1,
+          [usedKey]: (prev[usedKey] as number) + 1,
+        }));
+        return true;
       }
-      return next;
-    });
+      return false;
+    } catch {
+      return false;
+    }
   }, []);
 
-  const deductForChat = useCallback(() => {
-    setCredits((prev) => {
-      if (prev < CHAT_COST) {
-        if (process.env.NODE_ENV !== "production") {
-          console.log("[Credits] chat blocked:", { before: prev, actionType: "chat" });
-        }
-        return prev;
-      }
-      const next = prev - CHAT_COST;
-      if (process.env.NODE_ENV !== "production") {
-        console.log("[Credits] chat:", { before: prev, deducted: CHAT_COST, after: next, actionType: "chat" });
-      }
-      return next;
-    });
-  }, []);
+  const deductForAnalysis = useCallback(() => deduct("report"), [deduct]);
+  const deductForChat = useCallback(() => deduct("agent"), [deduct]);
+  const deductForSupport = useCallback(() => deduct("support"), [deduct]);
 
-  const canAnalyze = credits >= ANALYSIS_COST;
-  const canChat = credits >= CHAT_COST;
+  const canAnalyze = balances.reportTokens > 0;
+  const canChat = balances.agentTokens > 0;
+  const canSupport = balances.supportTokens > 0;
+
+  const credits = balances.reportTokens + balances.agentTokens + balances.supportTokens;
 
   const grantCreditsForTesting = useCallback((amount: number) => {
     if (process.env.NODE_ENV !== "production") {
-      setCredits(Math.max(0, Math.floor(amount)));
-      if (typeof window !== "undefined") {
-        localStorage.setItem(STORAGE_KEY, JSON.stringify(Math.max(0, Math.floor(amount))));
-      }
-      console.log(`[Credits] Granted ${amount} for testing`);
+      const n = Math.max(0, Math.floor(amount));
+      setBalances((prev) => ({ ...prev, reportTokens: n }));
     }
   }, []);
 
   const value = useMemo(
     () => ({
-      credits,
+      balances,
+      loading,
       canAnalyze,
       canChat,
+      canSupport,
       deductForAnalysis,
       deductForChat,
-      refreshFromStorage,
+      deductForSupport,
+      refreshCredits,
+      credits,
       grantCreditsForTesting: process.env.NODE_ENV !== "production" ? grantCreditsForTesting : undefined,
     }),
-    [credits, canAnalyze, canChat, deductForAnalysis, deductForChat, refreshFromStorage, grantCreditsForTesting]
+    [
+      balances,
+      loading,
+      canAnalyze,
+      canChat,
+      canSupport,
+      deductForAnalysis,
+      deductForChat,
+      deductForSupport,
+      refreshCredits,
+      credits,
+      grantCreditsForTesting,
+    ]
   );
 
-  return (
-    <CreditsContext.Provider value={value}>
-      {children}
-    </CreditsContext.Provider>
-  );
+  return <CreditsContext.Provider value={value}>{children}</CreditsContext.Provider>;
 }
 
 export function useCredits() {
   const ctx = useContext(CreditsContext);
-  if (ctx === undefined) {
-    throw new Error("useCredits must be used within a CreditsProvider");
-  }
+  if (!ctx) throw new Error("useCredits must be used within CreditsProvider");
   return ctx;
 }
