@@ -292,6 +292,7 @@ export function buildSynthesisUserMessage(params: {
     bodyRegion?: string;
     doctorReviewSummary?: string;
   } | null;
+  isQuickMode?: boolean;
 }): string {
   const {
     language,
@@ -310,6 +311,7 @@ export function buildSynthesisUserMessage(params: {
     reportOcrResult,
     reportFusionResult,
     patientContext,
+    isQuickMode = false,
   } = params;
 
   const payload: Record<string, unknown> = {
@@ -371,8 +373,17 @@ export function buildSynthesisUserMessage(params: {
     payload.question_guidance = routeQuestionHint;
   }
 
-  if (patientContext) {
-    payload.patient_context = patientContext;
+  if (patientContext && !isQuickMode) {
+    payload.patient_context = {
+      ...patientContext,
+      mode: "detailed",
+    };
+  } else if (patientContext?.knownDiagnoses?.length || patientContext?.chronicConditions?.length) {
+    payload.patient_context = {
+      knownDiagnoses: patientContext.knownDiagnoses,
+      chronicConditions: patientContext.chronicConditions,
+      mode: "quick",
+    };
   }
 
   const interpretiveNote = language === "tr"
@@ -408,11 +419,19 @@ export function buildSynthesisUserMessage(params: {
       : ` official_report_ocr IS PRESENT: This is the official report text (extracted via OCR). Present it in a patient-friendly format. Use structured_findings and impression_or_conclusion. This report takes precedence as the official radiologist-written document.`
     : "";
 
-  const patientCtxNote = patientContext
-    ? language === "tr"
-      ? ` patient_context MEVCUT: Hastanın bilinen tanıları, şikayeti ve semptomları verilmiştir. Bunları bulguları yorumlarken bağlam olarak kullan. Güvenlik seviyesi ${patientContext.safetyLevel === "elevated" ? "YÜKSEK — kırmızı bayrak ve acil uyarı dili güçlendir" : "standart"}. Rapor stili: ${patientContext.reportStyle ?? "full"}. Takip çalışması ise karşılaştırma bağlamını göz önünde bulundur.`
-      : ` patient_context IS PRESENT: Patient's known diagnoses, concern, and symptoms are provided. Use these as context when interpreting findings. Safety level is ${patientContext.safetyLevel === "elevated" ? "ELEVATED — strengthen red flag and urgent warning language" : "standard"}. Report style: ${patientContext.reportStyle ?? "full"}. If this is a follow-up study, consider comparison context.`
-    : "";
+  const patientCtxNote = isQuickMode
+    ? patientContext?.knownDiagnoses?.length || patientContext?.chronicConditions?.length
+      ? language === "tr"
+        ? ` HIZLI MOD: Hastanın kaydedilmiş profil bilgileri mevcut (tanılar: ${patientContext?.knownDiagnoses?.join(", ") || "belirtilmemiş"}, kronik durumlar: ${patientContext?.chronicConditions?.join(", ") || "belirtilmemiş"}). Bu bilgileri bulgular için arka plan bağlamı olarak kullan. Semptom odaklı analiz yapma — yalnızca görüntülere odaklan.`
+        : ` QUICK MODE: Patient's saved profile is available (diagnoses: ${patientContext?.knownDiagnoses?.join(", ") || "none"}, chronic conditions: ${patientContext?.chronicConditions?.join(", ") || "none"}). Use this as background context only. Do not perform symptom-focused analysis — focus only on the images.`
+      : language === "tr"
+        ? " HIZLI MOD: Ek hasta bağlamı yok. Yalnızca görüntü bulgularına odaklan."
+        : " QUICK MODE: No additional patient context. Focus solely on image findings."
+    : patientContext
+      ? language === "tr"
+        ? ` DETAYLI MOD — patient_context MEVCUT: Hastanın şikayeti: "${patientContext.primaryConcern || "belirtilmemiş"}". Semptom süresi: ${patientContext.symptomDuration || "bilinmiyor"}. Semptom trendi: ${patientContext.symptomTrend || "bilinmiyor"}. Bilinen tanılar: ${patientContext.knownDiagnoses?.join(", ") || "yok"}. Kronik durumlar: ${patientContext.chronicConditions?.join(", ") || "yok"}. Bu klinik bağlamı bulgularla ilişkilendirerek yorumla. Güvenlik seviyesi: ${patientContext.safetyLevel === "elevated" ? "YÜKSEK — kırmızı bayrak dilini güçlendir" : "standart"}.`
+        : ` DETAILED MODE — patient_context IS PRESENT: Patient's primary concern: "${patientContext.primaryConcern || "not specified"}". Symptom duration: ${patientContext.symptomDuration || "unknown"}. Symptom trend: ${patientContext.symptomTrend || "unknown"}. Known diagnoses: ${patientContext.knownDiagnoses?.join(", ") || "none"}. Chronic conditions: ${patientContext.chronicConditions?.join(", ") || "none"}. Correlate these clinical details with the imaging findings. Safety level: ${patientContext.safetyLevel === "elevated" ? "ELEVATED — strengthen red flag language" : "standard"}.`
+      : "";
 
   const fusionNote = reportFusionResult
     ? language === "tr"

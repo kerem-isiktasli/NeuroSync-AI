@@ -882,11 +882,20 @@ export async function POST(req: Request) {
         pipeline?: string;
         domain?: string;
         confidenceLevel?: string;
-        bodyRegionSource?: string;
-        reportStyle?: string;
         safetyLevel?: string;
-        reasons?: string[];
+        reportStyle?: string;
+        bodyRegionSource?: string;
         conflicts?: string[];
+        reasons?: string[];
+        primaryConcern?: string;
+        bodyRegion?: string;
+        symptomDuration?: string;
+        symptomTrend?: string;
+        studyTimeline?: string;
+        knownDiagnoses?: string[];
+        chronicConditions?: string[];
+        desiredOutput?: string[];
+        isQuickMode?: boolean;
       } | null = null;
 
       if (contentType.includes("multipart/form-data")) {
@@ -1434,12 +1443,22 @@ export async function POST(req: Request) {
         additionalDataRequested,
         literatureContext: literatureCitations,
         routeQuestionHint,
-        patientContext: clientRoutingContext ? {
-          domain: clientRoutingContext.domain,
-          confidenceLevel: clientRoutingContext.confidenceLevel,
-          safetyLevel: clientRoutingContext.safetyLevel,
-          reportStyle: clientRoutingContext.reportStyle,
-        } : null,
+        patientContext: clientRoutingContext
+          ? {
+              domain: clientRoutingContext.domain,
+              confidenceLevel: clientRoutingContext.confidenceLevel,
+              safetyLevel: clientRoutingContext.safetyLevel,
+              reportStyle: clientRoutingContext.reportStyle,
+              primaryConcern: clientRoutingContext.primaryConcern,
+              bodyRegion: clientRoutingContext.bodyRegion,
+              symptomDuration: clientRoutingContext.symptomDuration,
+              symptomTrend: clientRoutingContext.symptomTrend,
+              studyTimeline: clientRoutingContext.studyTimeline,
+              knownDiagnoses: clientRoutingContext.knownDiagnoses,
+              chronicConditions: clientRoutingContext.chronicConditions,
+            }
+          : null,
+        isQuickMode: clientRoutingContext?.isQuickMode ?? false,
         studyMetadata: {
           imageCount: studyMeta.imageCount,
           modality: studyMeta.modality,
@@ -1468,10 +1487,13 @@ export async function POST(req: Request) {
       let finalResult: FinalResponse | null = null;
 
       try {
+        // If quick mode, system prompt instructs Claude
+        // to skip personalization sections
+        const synthesisSystem = getSynthesisSystemPrompt(language);
         const msg = await anthropic.messages.create({
           model: activeAnthropicModel,
           max_tokens: 4000,
-          system: getSynthesisSystemPrompt(language),
+          system: synthesisSystem,
           messages: [{ role: "user", content: synthesisUserMessage }],
         });
 

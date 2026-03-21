@@ -85,7 +85,7 @@ export function DiagnosisProvider({ children }: { children: ReactNode }) {
   const [currentReportId, setCurrentReportId] = useState<string | null>(null);
 
   const { createNewReport, markProcessing, markComplete, markFailed } = useReports();
-  const { profile, currentIntake, saveCurrentIntake } = usePatient();
+  const { profile, currentIntake, saveCurrentIntake, quickModeSelected } = usePatient();
   const { language } = useSettings();
 
   const addLog = useCallback((message: string) => {
@@ -194,8 +194,6 @@ export function DiagnosisProvider({ children }: { children: ReactNode }) {
       onDownloadUrl: (url: string) => setDownloadUrl(url),
     };
 
-    const expandedContext = buildExpandedRoutingContext(routingDecision, currentIntake, profile);
-
     try {
       if (useDicom) {
         await validateDicomBatch(files);
@@ -203,10 +201,26 @@ export function DiagnosisProvider({ children }: { children: ReactNode }) {
           language: language === "en" ? "en" : "tr",
         });
       } else {
-        await runFullDiagnosisBatch(files, callbacks, expandedContext, {
-          language: language === "en" ? "en" : "tr",
-          reportFile: reportFile ?? undefined,
-        });
+        await runFullDiagnosisBatch(
+          files,
+          callbacks,
+          routingDecision,
+          {
+            primaryConcern: currentIntake.primaryConcern,
+            bodyRegion: currentIntake.bodyRegion || profile.commonBodyRegions?.[0],
+            symptomDuration: currentIntake.symptomDuration,
+            symptomTrend: currentIntake.symptomTrend,
+            studyTimeline: currentIntake.studyTimeline,
+            knownDiagnoses: profile.knownDiagnoses,
+            chronicConditions: profile.chronicConditions,
+            desiredOutput: currentIntake.desiredOutput?.length ? [...currentIntake.desiredOutput] : undefined,
+            isQuickMode: quickModeSelected === true,
+          },
+          {
+            language: language === "en" ? "en" : "tr",
+            reportFile: reportFile ?? undefined,
+          }
+        );
       }
     } catch (err) {
       const raw = err instanceof Error ? err.message : "An unknown error occurred during analysis.";
@@ -217,7 +231,7 @@ export function DiagnosisProvider({ children }: { children: ReactNode }) {
     } finally {
       setIsAnalyzing(false);
     }
-  }, [addLog, createNewReport, markProcessing, markComplete, markFailed, profile, currentIntake, saveCurrentIntake, language]);
+  }, [addLog, createNewReport, markProcessing, markComplete, markFailed, profile, currentIntake, saveCurrentIntake, language, quickModeSelected]);
 
   const resetDiagnosis = useCallback(() => {
     setDiagnosisResult(null);

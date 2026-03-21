@@ -573,12 +573,23 @@ export async function runFullDiagnosisBatch(
     onReport: (text: string) => void;
     onDownloadUrl: (url: string) => void;
   },
-  routingContext?: Record<string, unknown>,
+  routingDecision?: import("@/types/intake").RoutingDecision,
+  patientData?: {
+    primaryConcern?: string;
+    bodyRegion?: string;
+    symptomDuration?: string;
+    symptomTrend?: string;
+    studyTimeline?: string;
+    knownDiagnoses?: string[];
+    chronicConditions?: string[];
+    desiredOutput?: string[];
+    isQuickMode?: boolean;
+  },
   options?: { language?: "tr" | "en"; reportFile?: File }
 ): Promise<void> {
   console.log("[NeuroSync] Starting Analysis Pipeline (Batch)...");
-  if (routingContext && "pipeline" in routingContext) {
-    console.log("[NeuroSync] Intake routing:", routingContext.pipeline, routingContext.domain, routingContext.confidenceLevel);
+  if (routingDecision && "pipeline" in routingDecision) {
+    console.log("[NeuroSync] Intake routing:", routingDecision.pipeline, routingDecision.domain, routingDecision.confidenceLevel);
   }
 
   const imagesBase64 = await Promise.all(files.map((f) => CoreBridge.fileToBase64(f)));
@@ -614,7 +625,34 @@ ${result.references?.join("\n") || "-"}
     },
   }, {
     language: options?.language,
-    routingContext: routingContext ? JSON.stringify(routingContext) : undefined,
+    routingContext: routingDecision
+      ? JSON.stringify({
+          ...routingDecision,
+          primaryConcern: patientData?.primaryConcern,
+          bodyRegion: patientData?.bodyRegion,
+          symptomDuration: patientData?.symptomDuration,
+          symptomTrend: patientData?.symptomTrend,
+          studyTimeline: patientData?.studyTimeline,
+          knownDiagnoses: patientData?.knownDiagnoses,
+          chronicConditions: patientData?.chronicConditions,
+          desiredOutput: patientData?.desiredOutput,
+          isQuickMode: patientData?.isQuickMode ?? false,
+        })
+      : patientData
+        ? JSON.stringify({
+            pipeline: "image-analysis",
+            domain: "general-radiology",
+            primaryConcern: patientData.primaryConcern,
+            bodyRegion: patientData.bodyRegion,
+            symptomDuration: patientData.symptomDuration,
+            symptomTrend: patientData.symptomTrend,
+            studyTimeline: patientData.studyTimeline,
+            knownDiagnoses: patientData.knownDiagnoses,
+            chronicConditions: patientData.chronicConditions,
+            desiredOutput: patientData.desiredOutput,
+            isQuickMode: patientData.isQuickMode ?? false,
+          })
+        : undefined,
     reportFile: options?.reportFile,
   });
 
