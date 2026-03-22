@@ -23,9 +23,9 @@ import {
   buildGeneralFindings,
 } from "@/lib/medical/processors";
 import {
-  createJob,
   updateJob,
   getJob,
+  type AnalysisJobPayload,
   type AnalysisJobResult,
 } from "./analysisJobStore";
 
@@ -34,28 +34,30 @@ const MAX_DICOM_SLICES = parseInt(
   10
 );
 
-export interface JobPayload {
-  images: Array<{ imageBase64: string; fileName: string }>;
-  language?: "tr" | "en";
-}
+export type JobPayload = AnalysisJobPayload;
 
 import { extractDataUriMeta } from "@/lib/dataUriUtils";
 
 export async function runDicomAnalysisJob(
   jobId: string,
-  payload: JobPayload
+  payloadOverride?: JobPayload
 ): Promise<void> {
-  const job = getJob(jobId);
+  const job = await getJob(jobId);
   if (!job || job.status !== "pending") return;
 
-  updateJob(jobId, { status: "processing" });
+  const payload = payloadOverride ?? job.payload;
+  if (!payload?.images?.length) {
+    await updateJob(jobId, {
+      status: "failed",
+      error: "No images in job payload",
+    });
+    return;
+  }
+
+  await updateJob(jobId, { status: "processing" });
 
   try {
     const { images, language = "en" } = payload;
-    if (!images?.length) {
-      updateJob(jobId, { status: "failed", error: "No images provided" });
-      return;
-    }
 
     const dicomFiles = images
       .map((img) => {
@@ -290,9 +292,9 @@ export async function runDicomAnalysisJob(
       domain: domainRoute.domain,
     };
 
-    updateJob(jobId, { status: "completed", result });
+    await updateJob(jobId, { status: "completed", result });
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
-    updateJob(jobId, { status: "failed", error: message });
+    await updateJob(jobId, { status: "failed", error: message });
   }
 }

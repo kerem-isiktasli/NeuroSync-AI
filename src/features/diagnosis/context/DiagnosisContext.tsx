@@ -11,6 +11,7 @@ import {
   runFullDiagnosis,
   runFullDiagnosisBatch,
   runFullDiagnosisDicomBatch,
+  type AnalysisStreamProgress,
 } from "@/services/core-bridge";
 import type { RoutingDecision, AnalysisIntake, PatientProfile } from "@/types/intake";
 import type { DiagnosisResult, DiagnosisState } from "@/types/diagnosis";
@@ -38,23 +39,33 @@ function buildExpandedRoutingContext(
   };
 }
 
-function formatAnalysisError(raw: string, err: unknown): string {
-  if (raw.includes("404") && (raw.toLowerCase().includes("model") || raw.toLowerCase().includes("not found"))) {
+function formatAnalysisError(raw: string, err: unknown, language: "tr" | "en"): string {
+  const lower = raw.toLowerCase();
+  if (
+    raw.includes("429") ||
+    lower.includes("resource exhausted") ||
+    lower.includes("too many requests")
+  ) {
+    return language === "tr"
+      ? "Yapay zekâ servisi şu an yoğun. Lütfen bir dakika sonra tekrar deneyin."
+      : "The AI service is busy right now. Please try again in a minute.";
+  }
+  if (raw.includes("404") && (lower.includes("model") || lower.includes("not found"))) {
     return "The AI model is currently unavailable (404). Try setting VERTEX_MODEL=gemini-2.5-flash in your environment, or contact support.";
   }
-  if (raw.toLowerCase().includes("permission") || raw.includes("403")) {
+  if (lower.includes("permission") || raw.includes("403")) {
     return "Access to the AI service was denied. Check credentials and IAM permissions.";
   }
-  if (raw.toLowerCase().includes("timeout")) {
+  if (lower.includes("timeout")) {
     return "The analysis timed out. Please try again.";
   }
-  if (raw.toLowerCase().includes("413") || raw.toLowerCase().includes("payload too large") || raw.toLowerCase().includes("body exceeded")) {
+  if (lower.includes("413") || lower.includes("payload too large") || lower.includes("body exceeded")) {
     return "Study size too large. Try fewer files or a smaller study.";
   }
   if (err instanceof Error && (err.name === "AbortError" || err.message?.toLowerCase().includes("aborted"))) {
     return "Upload was interrupted. Please try again.";
   }
-  if (raw.toLowerCase().includes("failed to fetch") || raw.toLowerCase().includes("network error")) {
+  if (lower.includes("failed to fetch") || lower.includes("network error")) {
     return "Network error. Check your connection and try again.";
   }
   return raw;
@@ -83,6 +94,10 @@ export function DiagnosisProvider({ children }: { children: ReactNode }) {
   const [downloadUrl, setDownloadUrl] = useState<string | null>(null);
   const [logs, setLogs] = useState<string[]>([]);
   const [currentReportId, setCurrentReportId] = useState<string | null>(null);
+  const [analysisStreamProgress, setAnalysisStreamProgress] = useState<{
+    percent: number;
+    message: string;
+  } | null>(null);
 
   const { createNewReport, markProcessing, markComplete, markFailed } = useReports();
   const { profile, currentIntake, saveCurrentIntake, quickModeSelected } = usePatient();
@@ -92,12 +107,31 @@ export function DiagnosisProvider({ children }: { children: ReactNode }) {
     setLogs((prev) => [message, ...prev]);
   }, []);
 
+  const lang: "tr" | "en" = language === "en" ? "en" : "tr";
+
+  const onStreamProgress = useCallback((p: AnalysisStreamProgress) => {
+    setAnalysisStreamProgress((prev) => {
+      const basePct = prev?.percent ?? 0;
+      const parsed =
+        typeof p.percent === "number" && Number.isFinite(p.percent)
+          ? Math.min(100, Math.max(0, Math.round(p.percent)))
+          : basePct;
+      const nextPct = Math.max(basePct, parsed);
+      const nextMsg =
+        typeof p.message === "string" && p.message.trim()
+          ? p.message.trim()
+          : (prev?.message ?? "");
+      return { percent: nextPct, message: nextMsg };
+    });
+  }, []);
+
   const analyzeFile = useCallback(async (file: File) => {
     setIsAnalyzing(true);
     setError(null);
     setDiagnosisResult(null);
     setReportText(null);
     setDownloadUrl(null);
+    setAnalysisStreamProgress(null);
 
     const reportId = await createNewReport(file.name, file.type || "image/jpeg");
     setCurrentReportId(reportId);
@@ -113,6 +147,7 @@ export function DiagnosisProvider({ children }: { children: ReactNode }) {
       const expandedContext = buildExpandedRoutingContext(routingDecision, currentIntake, profile);
       await runFullDiagnosis(file, {
         onLog: (msg) => addLog(msg),
+        onProgress: onStreamProgress,
         onResult: (result) => {
           setDiagnosisResult(result);
           setSelectedOrgan(result.affected_organ);
@@ -120,17 +155,18 @@ export function DiagnosisProvider({ children }: { children: ReactNode }) {
         },
         onReport: (text) => setReportText(text),
         onDownloadUrl: (url) => setDownloadUrl(url),
-      }, { language: language === "en" ? "en" : "tr", routingContext: JSON.stringify(expandedContext) });
+      }, { language: lang, routingContext: JSON.stringify(expandedContext) });
     } catch (err) {
       const raw = err instanceof Error ? err.message : "An unknown error occurred during analysis.";
-      const message = formatAnalysisError(raw, err);
+      const message = formatAnalysisError(raw, err, lang);
       setError(message);
       if (reportId) markFailed(reportId, message);
       console.error("Analysis failed:", err);
     } finally {
       setIsAnalyzing(false);
+      setAnalysisStreamProgress(null);
     }
-  }, [addLog, createNewReport, markProcessing, markComplete, markFailed, profile, currentIntake, language]);
+  }, [addLog, createNewReport, markProcessing, markComplete, markFailed, profile, currentIntake, lang, onStreamProgress]);
 
   const analyzeFiles = useCallback(async (files: File[], reportFile?: File | null) => {
     setIsAnalyzing(true);
@@ -138,6 +174,7 @@ export function DiagnosisProvider({ children }: { children: ReactNode }) {
     setDiagnosisResult(null);
     setReportText(null);
     setDownloadUrl(null);
+    setAnalysisStreamProgress(null);
 
     // ── Intake-aware routing ──
     const fileInspection = inspectFiles(files);
@@ -185,6 +222,7 @@ export function DiagnosisProvider({ children }: { children: ReactNode }) {
 
     const callbacks = {
       onLog: (msg: string) => addLog(msg),
+      onProgress: onStreamProgress,
       onResult: (result: DiagnosisResult) => {
         setDiagnosisResult(result);
         setSelectedOrgan(result.affected_organ);
@@ -198,7 +236,7 @@ export function DiagnosisProvider({ children }: { children: ReactNode }) {
       if (useDicom) {
         await validateDicomBatch(files);
         await runFullDiagnosisDicomBatch(files, callbacks, {
-          language: language === "en" ? "en" : "tr",
+          language: lang,
         });
       } else {
         await runFullDiagnosisBatch(
@@ -208,30 +246,31 @@ export function DiagnosisProvider({ children }: { children: ReactNode }) {
           {
             primaryConcern: currentIntake.primaryConcern,
             bodyRegion: currentIntake.bodyRegion || profile.commonBodyRegions?.[0],
-            symptomDuration: currentIntake.symptomDuration,
-            symptomTrend: currentIntake.symptomTrend,
-            studyTimeline: currentIntake.studyTimeline,
+            symptomDuration: currentIntake.symptomDuration ?? undefined,
+            symptomTrend: currentIntake.symptomTrend ?? undefined,
+            studyTimeline: currentIntake.studyTimeline ?? undefined,
             knownDiagnoses: profile.knownDiagnoses,
             chronicConditions: profile.chronicConditions,
             desiredOutput: currentIntake.desiredOutput?.length ? [...currentIntake.desiredOutput] : undefined,
             isQuickMode: quickModeSelected === true,
           },
           {
-            language: language === "en" ? "en" : "tr",
+            language: lang,
             reportFile: reportFile ?? undefined,
           }
         );
       }
     } catch (err) {
       const raw = err instanceof Error ? err.message : "An unknown error occurred during analysis.";
-      const message = formatAnalysisError(raw, err);
+      const message = formatAnalysisError(raw, err, lang);
       setError(message);
       if (reportId) markFailed(reportId, message);
       console.error("Analysis failed:", err);
     } finally {
       setIsAnalyzing(false);
+      setAnalysisStreamProgress(null);
     }
-  }, [addLog, createNewReport, markProcessing, markComplete, markFailed, profile, currentIntake, saveCurrentIntake, language, quickModeSelected]);
+  }, [addLog, createNewReport, markProcessing, markComplete, markFailed, profile, currentIntake, saveCurrentIntake, lang, quickModeSelected, onStreamProgress]);
 
   const resetDiagnosis = useCallback(() => {
     setDiagnosisResult(null);
@@ -240,6 +279,7 @@ export function DiagnosisProvider({ children }: { children: ReactNode }) {
     setLogs([]);
     setDownloadUrl(null);
     setCurrentReportId(null);
+    setAnalysisStreamProgress(null);
   }, []);
 
   const loadSavedResult = useCallback((result: DiagnosisResult) => {
@@ -267,6 +307,7 @@ export function DiagnosisProvider({ children }: { children: ReactNode }) {
       addLog,
       downloadUrl,
       currentReportId,
+      analysisStreamProgress,
     }),
     [
       selectedOrgan,
@@ -282,6 +323,7 @@ export function DiagnosisProvider({ children }: { children: ReactNode }) {
       addLog,
       downloadUrl,
       currentReportId,
+      analysisStreamProgress,
     ]
   );
 

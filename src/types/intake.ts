@@ -134,6 +134,8 @@ export interface AnalysisIntake {
   uploadFormat: UploadFormat | null;
   studyCompleteness: StudyCompleteness | null;
   hasWrittenReport: YesNoUnsure | null;
+  /** Display name of attached doctor report file from intake form (not uploaded to server separately). */
+  doctorReportFile?: string;
   desiredOutput: OutputPreference[];
 
   // GROUP B2 — Conditional fields (shown based on answers)
@@ -212,6 +214,7 @@ export const EMPTY_ANALYSIS_INTAKE: AnalysisIntake = {
   uploadFormat: null,
   studyCompleteness: null,
   hasWrittenReport: null,
+  doctorReportFile: undefined,
   desiredOutput: [],
   contrastUsed: null,
   doctorReviewed: null,

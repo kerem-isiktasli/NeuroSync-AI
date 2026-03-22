@@ -245,6 +245,35 @@ export default function AdminPage() {
     await loadUsers();
   };
 
+  const deleteUser = async (uid: string, email: string) => {
+    if (
+      !confirm(
+        `Permanently delete account for ${email}?\n\n` +
+          `This will:\n` +
+          `• Delete their Firebase Auth account\n` +
+          `• Remove their credits and roles\n\n` +
+          `This action CANNOT be undone.`
+      )
+    )
+      return;
+
+    const user = auth.currentUser;
+    if (!user) return;
+    const token = await user.getIdToken(true);
+
+    const res = await fetch(`/api/admin/users?uid=${uid}`, {
+      method: "DELETE",
+      headers: { Authorization: `Bearer ${token}` },
+    });
+
+    if (res.ok) {
+      await loadUsers();
+    } else {
+      const d = await res.json();
+      setError(d.error || "Failed to delete user");
+    }
+  };
+
   const loadReports = async () => {
     setReportsLoading(true);
     try {
@@ -581,6 +610,11 @@ export default function AdminPage() {
                     style={inputBaseStyle}
                     placeholder="gemini-2.5-flash"
                   />
+                  <p className="text-[10px] font-mono mt-1" style={{ color: "#3d4f66" }}>
+                    Saved to Firestore <code className="text-[#5a6b80]">config/active</code>. Used for
+                    classification, intake, and image extraction (overrides env when set). Effective within
+                    seconds after save.
+                  </p>
                 </div>
                 <div>
                   <label className="block text-xs font-mono uppercase tracking-wider mb-1.5" style={{ color: "#7a8aa0" }}>
@@ -611,7 +645,8 @@ export default function AdminPage() {
                     placeholder="claude-sonnet-4-6"
                   />
                   <p className="text-[10px] font-mono mt-1" style={{ color: "#3d4f66" }}>
-                    Overrides ANTHROPIC_MODEL in .env.local
+                    Firestore <code className="text-[#5a6b80]">config/active</code>; falls back to{" "}
+                    <code className="text-[#5a6b80]">ANTHROPIC_MODEL</code> env if unset
                   </p>
                 </div>
               </div>
@@ -843,27 +878,42 @@ export default function AdminPage() {
                         </p>
                       </div>
                     </div>
-                    <button
-                      type="button"
-                      onClick={() => void toggleUserDisabled(u.uid, u.disabled)}
-                      className="px-3 py-1.5 rounded-lg text-xs font-semibold transition-all shrink-0 flex items-center gap-1.5"
-                      style={
-                        u.disabled
-                          ? {
-                              background: "rgba(0,255,136,0.08)",
-                              border: "1px solid rgba(0,255,136,0.25)",
-                              color: "#00ff88",
-                            }
-                          : {
-                              background: "rgba(255,68,102,0.08)",
-                              border: "1px solid rgba(255,68,102,0.25)",
-                              color: "#ff4466",
-                            }
-                      }
-                    >
-                      <Ban size={11} />
-                      {u.disabled ? "Enable" : "Disable"}
-                    </button>
+                    <div className="flex items-center gap-2 shrink-0">
+                      <button
+                        type="button"
+                        onClick={() => void toggleUserDisabled(u.uid, u.disabled)}
+                        className="px-3 py-1.5 rounded-lg text-xs font-semibold transition-all flex items-center gap-1.5"
+                        style={
+                          u.disabled
+                            ? {
+                                background: "rgba(0,255,136,0.08)",
+                                border: "1px solid rgba(0,255,136,0.25)",
+                                color: "#00ff88",
+                              }
+                            : {
+                                background: "rgba(255,68,102,0.08)",
+                                border: "1px solid rgba(255,68,102,0.25)",
+                                color: "#ff4466",
+                              }
+                        }
+                      >
+                        <Ban size={11} />
+                        {u.disabled ? "Enable" : "Disable"}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => void deleteUser(u.uid, u.email)}
+                        className="px-2.5 py-1 rounded-lg text-xs font-medium transition-all flex items-center gap-1"
+                        style={{
+                          background: "rgba(255,68,102,0.06)",
+                          border: "1px solid rgba(255,68,102,0.2)",
+                          color: "#ff4466",
+                        }}
+                      >
+                        <Trash2 size={11} />
+                        Delete
+                      </button>
+                    </div>
                   </div>
                 ))}
                 {users.length === 0 && !usersLoading && (

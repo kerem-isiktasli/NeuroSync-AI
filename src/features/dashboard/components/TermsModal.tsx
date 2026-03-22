@@ -71,42 +71,113 @@ export default function TermsModal({ onAccept, onLogout, isAccepting = false }: 
         >
           {/* Section 1 — Terms of Use */}
           <section>
-            <h3 className="text-sm font-bold text-theme-text-primary uppercase tracking-wider mb-2 flex items-center gap-2">
+            <h3 className="text-sm font-bold text-theme-text-primary uppercase tracking-wider mb-3 flex items-center gap-2">
               <FileText size={14} className="text-theme-accent" />
               Terms of Use
             </h3>
-            <ul className="text-sm text-theme-text-secondary space-y-2 list-disc list-inside">
-              <li>RapiMed provides AI-assisted insights for <strong className="text-theme-text-primary">informational purposes only</strong>.</li>
-              <li>The platform <strong className="text-theme-text-primary">does not provide medical diagnoses</strong>.</li>
-              <li>You must consult licensed healthcare professionals for any medical decisions.</li>
-            </ul>
+            <div className="text-sm text-theme-text-secondary space-y-2.5 leading-relaxed">
+              <p>
+                RapiMed provides AI-assisted medical image interpretation for{" "}
+                <strong className="text-theme-text-primary">informational purposes only</strong>. It does not constitute
+                medical advice, diagnosis, or treatment.
+              </p>
+              <p>
+                By using RapiMed, you confirm you are at least 18 years old and agree to use the platform responsibly.
+              </p>
+              <p>You must consult a licensed healthcare professional before making any medical decision based on AI-generated output.</p>
+              <p>
+                RapiMed reserves the right to suspend accounts that misuse the platform, share access credentials, or
+                attempt to circumvent usage limits.
+              </p>
+            </div>
           </section>
 
           {/* Section 2 — Medical Disclaimer */}
           <section>
-            <h3 className="text-sm font-bold text-theme-text-primary uppercase tracking-wider mb-2 flex items-center gap-2">
+            <h3 className="text-sm font-bold text-theme-text-primary uppercase tracking-wider mb-3 flex items-center gap-2">
               <Shield size={14} className="text-theme-accent" />
               Medical Disclaimer
             </h3>
-            <ul className="text-sm text-theme-text-secondary space-y-2 list-disc list-inside">
-              <li>AI-generated analysis may be <strong className="text-theme-text-primary">incomplete or incorrect</strong>.</li>
-              <li>RapiMed is not responsible for decisions made based on AI output.</li>
-            </ul>
+            <div className="text-sm text-theme-text-secondary space-y-2.5 leading-relaxed">
+              <p>
+                AI-generated analysis may be{" "}
+                <strong className="text-theme-text-primary">incomplete, inaccurate, or outdated</strong>. No AI system can
+                replace clinical judgment.
+              </p>
+              <p>
+                RapiMed is not liable for any harm, injury, or loss arising from reliance on AI output. All reports are
+                supplementary tools only.
+              </p>
+              <p>
+                In case of a medical emergency, call your local emergency services immediately. Do not rely on RapiMed for
+                emergency guidance.
+              </p>
+            </div>
           </section>
 
-          {/* Section 3 — Data Use */}
+          {/* Section 3 — Token & Subscription System */}
           <section>
-            <h3 className="text-sm font-bold text-theme-text-primary uppercase tracking-wider mb-2 flex items-center gap-2">
+            <h3 className="text-sm font-bold text-theme-text-primary uppercase tracking-wider mb-3 flex items-center gap-2">
               <Database size={14} className="text-theme-accent" />
-              Data Use
+              Token & Subscription System
             </h3>
-            <ul className="text-sm text-theme-text-secondary space-y-2 list-disc list-inside">
-              <li>Uploaded reports may be processed by AI models to provide insights.</li>
-              <li>Your data remains private and is not shared with third parties except as needed for processing.</li>
-            </ul>
+            <div className="text-sm text-theme-text-secondary space-y-2.5 leading-relaxed">
+              <p>
+                RapiMed uses a token-based system with three separate pools: Report tokens (AI report generation), Agent
+                tokens (AI chat), and Support tokens (customer support messages).
+              </p>
+              <p>
+                Free plan tokens reset monthly. Purchased add-on token packs do not expire and are non-refundable once
+                consumed.
+              </p>
+              <p>
+                RapiMed reserves the right to adjust token allocations with reasonable notice. Enterprise terms are governed
+                by a separate agreement.
+              </p>
+            </div>
           </section>
 
-          {/* Spacer so last content can scroll to bottom */}
+          {/* Section 4 — Data & Privacy */}
+          <section>
+            <h3 className="text-sm font-bold text-theme-text-primary uppercase tracking-wider mb-3 flex items-center gap-2">
+              <Shield size={14} className="text-theme-accent" />
+              Data & Privacy
+            </h3>
+            <div className="text-sm text-theme-text-secondary space-y-2.5 leading-relaxed">
+              <p>
+                Uploaded medical images and reports are processed by AI models to generate insights. Your data is encrypted
+                in transit and at rest.
+              </p>
+              <p>
+                Your data is never sold to third parties. It is shared only with AI processing providers (Google Vertex AI,
+                Anthropic) under strict data processing agreements.
+              </p>
+              <p>
+                When you submit a customer support ticket and consent to data sharing, designated support staff may access
+                your reports to assist you. You can revoke this consent at any time by opening a new ticket.
+              </p>
+              <p>You may request deletion of your account and all associated data by contacting support@rapimed.ai.</p>
+            </div>
+          </section>
+
+          {/* Section 5 — Support & Customer Service */}
+          <section>
+            <h3 className="text-sm font-bold text-theme-text-primary uppercase tracking-wider mb-3 flex items-center gap-2">
+              <FileText size={14} className="text-theme-accent" />
+              Support & Customer Service
+            </h3>
+            <div className="text-sm text-theme-text-secondary space-y-2.5 leading-relaxed">
+              <p>
+                Support conversations are logged and may be reviewed for quality assurance. Support staff operate under
+                confidentiality agreements and cannot access your medical data without your explicit ticket consent.
+              </p>
+              <p>
+                Response times: Medical support within 24 hours, account issues within 48 hours. Enterprise customers
+                receive priority SLA response times.
+              </p>
+            </div>
+          </section>
+
           <div className="h-4" />
         </div>
 

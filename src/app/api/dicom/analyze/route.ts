@@ -142,6 +142,14 @@ export async function POST(req: Request) {
             ? "Görüntüler alındı."
             : "Images received successfully.",
       });
+      await sendEvent("progress", {
+        phase: "received",
+        percent: 5,
+        message:
+          language === "tr"
+            ? "DICOM dosyaları alındı."
+            : "DICOM files received.",
+      });
 
       try {
         const { result, meta } = await runDicomAnalysisPipeline({

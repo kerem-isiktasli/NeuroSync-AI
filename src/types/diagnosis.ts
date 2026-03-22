@@ -26,6 +26,8 @@ export interface LiteratureReference {
 }
 
 export interface ReportSections {
+  /** One sentence plain-language summary for non-doctors */
+  plain_summary?: string;
   exam_overview?: string;
   technical_summary?: string;
   detailed_findings?: string[];
@@ -171,4 +173,6 @@ export interface DiagnosisState {
   isAnalyzing: boolean;
   error: string | null;
   reportText?: string | null;
+  /** Live SSE progress from /api/analyze; null when idle */
+  analysisStreamProgress: { percent: number; message: string } | null;
 }

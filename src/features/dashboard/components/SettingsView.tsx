@@ -23,6 +23,12 @@ export default function SettingsView() {
 
   const handleThemeToggle = () => {
     toggleTheme();
+    // Force repaint for inline-style components
+    document.body.style.transition = "background-color 0.3s ease";
+    document.body.style.backgroundColor = theme === "dark" ? "#f0f4f8" : "#0a0f1e";
+    setTimeout(() => {
+      document.body.style.transition = "";
+    }, 300);
     toast({
       title: theme === "dark" ? t("theme") + ": Light" : t("theme") + ": Dark",
       description:

@@ -51,6 +51,23 @@
     --theme-focus-ring: 160 84% 39%;
   }
 
+  /* Light mode overrides for components using
+     inline styles that reference CSS variables */
+  html.light,
+  html[data-theme="light"] {
+    --page-bg: #f0f4f8;
+    --card-bg: rgba(255, 255, 255, 0.9);
+    --card-border: rgba(0, 0, 0, 0.08);
+    --text-primary: #0f172a;
+    --text-secondary: #475569;
+    --text-muted: #94a3b8;
+    --accent: #0ea5e9;
+    --accent-glow: rgba(14, 165, 233, 0.15);
+    --success: #10b981;
+    --warning: #f59e0b;
+    --danger: #ef4444;
+  }
+
   .dark {
     --background: 0 0% 3.9%;
     --foreground: 0 0% 98%;

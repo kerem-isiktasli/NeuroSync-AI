@@ -175,6 +175,15 @@ function logDataToString(data: unknown): string {
   return String(data);
 }
 
+/** SSE progress payload from /api/analyze and /api/dicom/analyze */
+export type AnalysisStreamProgress = {
+  phase?: string;
+  percent?: number;
+  message?: string;
+  completed?: number;
+  total?: number;
+};
+
 function jobResultToFinalResponse(r: AnalysisJobResult): FinalResponse {
   const findingsByLevel = r.findingsPerVertebra
     .map((v) => `${v.level}: ${v.finding}`)
@@ -277,6 +286,7 @@ export class CoreBridge {
       onClaudeData: (data: FinalResponse) => void;
       onDocStatus: (status: string) => void;
       onDocUrl: (url: string) => void;
+      onProgress?: (p: AnalysisStreamProgress) => void;
     },
     options?: { language?: "tr" | "en"; routingContext?: string; reportFile?: File }
   ): Promise<void> {
@@ -317,6 +327,7 @@ export class CoreBridge {
       onClaudeData: (data: FinalResponse) => void;
       onDocStatus: (status: string) => void;
       onDocUrl: (url: string) => void;
+      onProgress?: (p: AnalysisStreamProgress) => void;
     },
     options?: { language?: "tr" | "en" }
   ): Promise<void> {
@@ -370,6 +381,9 @@ export class CoreBridge {
             case "log":
               callbacks.onLog(logDataToString(data));
               break;
+            case "progress":
+              callbacks.onProgress?.(data as AnalysisStreamProgress);
+              break;
             case "result":
               if (process.env.NODE_ENV !== "production") {
                 console.log("[CoreBridge] DICOM SSE result received, streaming complete.");
@@ -408,6 +422,7 @@ export class CoreBridge {
       onClaudeData: (data: FinalResponse) => void;
       onDocStatus: (status: string) => void;
       onDocUrl: (url: string) => void;
+      onProgress?: (p: AnalysisStreamProgress) => void;
     },
     options?: { language?: "tr" | "en"; routingContext?: string; reportFile?: File }
   ): Promise<void> {
@@ -474,6 +489,9 @@ export class CoreBridge {
             case "log":
               callbacks.onLog(logDataToString(data));
               break;
+            case "progress":
+              callbacks.onProgress?.(data as AnalysisStreamProgress);
+              break;
             case "result":
               if (process.env.NODE_ENV !== "production") {
                 console.log("[CoreBridge] SSE result received, streaming complete.");
@@ -519,6 +537,7 @@ export async function runFullDiagnosis(
     onResult: (result: DiagnosisResult) => void;
     onReport: (text: string) => void;
     onDownloadUrl: (url: string) => void;
+    onProgress?: (p: AnalysisStreamProgress) => void;
   },
   options?: { language?: "tr" | "en"; routingContext?: string; reportFile?: File }
 ): Promise<void> {
@@ -530,6 +549,7 @@ export async function runFullDiagnosis(
   // 2. Run study-based pipeline (backend assembles study, Vertex receives summary)
   await CoreBridge.analyzeStudy(file, imageBase64, {
     onLog: (msg) => callbacks.onLog(`[SYSTEM] ${msg}`),
+    onProgress: callbacks.onProgress,
 
     onClaudeData: (data) => {
       callbacks.onLog(`[RapiMed] Analiz tamamlandı.`);
@@ -572,6 +592,7 @@ export async function runFullDiagnosisBatch(
     onResult: (result: DiagnosisResult) => void;
     onReport: (text: string) => void;
     onDownloadUrl: (url: string) => void;
+    onProgress?: (p: AnalysisStreamProgress) => void;
   },
   routingDecision?: import("@/types/intake").RoutingDecision,
   patientData?: {
@@ -596,6 +617,7 @@ export async function runFullDiagnosisBatch(
 
   await CoreBridge.analyzeStudyBatch(files, imagesBase64, {
     onLog: (msg) => callbacks.onLog(`[SYSTEM] ${msg}`),
+    onProgress: callbacks.onProgress,
 
     onClaudeData: (data) => {
       callbacks.onLog(`[RapiMed] Analiz tamamlandı.`);
@@ -670,6 +692,7 @@ export async function runFullDiagnosisDicomBatch(
     onResult: (result: DiagnosisResult) => void;
     onReport: (text: string) => void;
     onDownloadUrl: (url: string) => void;
+    onProgress?: (p: AnalysisStreamProgress) => void;
   },
   options?: { language?: "tr" | "en" }
 ): Promise<void> {
@@ -677,6 +700,7 @@ export async function runFullDiagnosisDicomBatch(
 
   await CoreBridge.analyzeDicomStudyBatch(files, {
     onLog: (msg) => callbacks.onLog(`[SYSTEM] ${msg}`),
+    onProgress: callbacks.onProgress,
 
     onClaudeData: (data) => {
       callbacks.onLog(`[RapiMed] Analiz tamamlandı.`);

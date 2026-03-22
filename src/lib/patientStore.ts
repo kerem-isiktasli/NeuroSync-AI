@@ -59,10 +59,12 @@ export async function saveAnalysisIntake(
   intake: AnalysisIntake
 ): Promise<string> {
   const now = new Date().toISOString();
-  const ref = await addDoc(collection(db, INTAKES_COLLECTION), {
-    ...intake,
-    createdAt: now,
-  });
+  // Strip undefined fields — Firestore rejects them
+  const clean: Record<string, unknown> = { createdAt: now };
+  for (const [k, v] of Object.entries({ ...intake })) {
+    if (v !== undefined && v !== null) clean[k] = v;
+  }
+  const ref = await addDoc(collection(db, INTAKES_COLLECTION), clean);
   return ref.id;
 }
 

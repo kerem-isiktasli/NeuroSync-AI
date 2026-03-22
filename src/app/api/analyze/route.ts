@@ -30,6 +30,7 @@ import { ANTHROPIC_CONFIG } from "@/lib/anthropicConfig";
 import { VERTEX_CONFIG } from "@/lib/vertexConfig";
 import { loadRuntimeConfig } from "@/lib/runtimeConfig";
 import { applyContradictionGuards } from "@/lib/reportContradictionGuard";
+import { rasterizePdfUpload } from "@/lib/rasterizePdfForAnalyze";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -45,11 +46,14 @@ const MAX_SLICES_FOR_ANALYSIS =
   parseInt(process.env.MAX_DICOM_SLICES_FOR_AI ?? "25", 10) || 25;
 const MAX_IMAGE_BYTES = 20 * 1024 * 1024;
 /** Per-image Vertex call timeout (classify+extract). */
-const PER_IMAGE_TIMEOUT_MS = 60_000;
+const PER_IMAGE_TIMEOUT_MS = 35_000;
 /** Maximum total Vertex analysis phase duration. */
 const VERTEX_PHASE_MAX_MS = 180_000;
-/** Process images in chunks of this size for bounded concurrency. */
-const CHUNK_SIZE = 3;
+/** Process images in chunks of this size for bounded Vertex concurrency (default 2; env VERTEX_IMAGE_CONCURRENCY). */
+const CHUNK_SIZE = Math.max(
+  1,
+  Math.min(8, parseInt(process.env.VERTEX_IMAGE_CONCURRENCY ?? "2", 10) || 2)
+);
 const SUPPORTED_IMAGE_MIME = new Set([
   "image/jpeg",
   "image/jpg",
@@ -93,6 +97,7 @@ const VertexFindingSchema = z.object({
 });
 
 const ReportSectionsSchema = z.object({
+  plain_summary: z.string().optional().default(""),
   exam_overview: z.string().optional().default(""),
   technical_summary: z.string().optional().default(""),
   detailed_findings: z.array(z.string()).optional().default([]),
@@ -141,6 +146,7 @@ const FinalResponseSchema = z.object({
   anatomical_region: z.string().optional().default(""),
   professional_report_markdown: z.string().optional().default(""),
   report_sections: ReportSectionsSchema.optional().default({
+    plain_summary: "",
     exam_overview: "",
     technical_summary: "",
     detailed_findings: [],
@@ -303,8 +309,24 @@ async function normalizeImages(
   for (const image of inputImages) {
     const { mimeType, base64 } = extractDataUriMeta(image.imageBase64);
 
-    if (mimeType === "application/pdf") {
-      throw new Error("PDF uploads are not supported by this route yet.");
+    const isPdf =
+      mimeType === "application/pdf" ||
+      (mimeType === "application/octet-stream" && /\.pdf$/i.test(image.fileName));
+
+    if (isPdf) {
+      const remainingSlots = MAX_IMAGES - output.length;
+      if (remainingSlots <= 0) {
+        throw new Error(
+          `Too many pages after PDF expansion. Maximum ${MAX_IMAGES} image slots allowed.`
+        );
+      }
+      const pages = await rasterizePdfUpload({
+        fileName: image.fileName,
+        pdfBase64: base64,
+        maxPages: remainingSlots,
+      });
+      output.push(...pages);
+      continue;
     }
     if (
       mimeType.includes("dicom") ||
@@ -490,6 +512,7 @@ function buildStructuredFailureResponse(params: {
       anatomical_region: "",
       professional_report_markdown: "",
       report_sections: {
+        plain_summary: "",
         exam_overview: "",
         technical_summary: "",
         detailed_findings: [],
@@ -528,6 +551,7 @@ function buildStructuredFailureResponse(params: {
     anatomical_region: "",
     professional_report_markdown: "",
     report_sections: {
+      plain_summary: "",
       exam_overview: "",
       technical_summary: "",
       detailed_findings: [],
@@ -601,6 +625,7 @@ function buildReportOnlyResponse(params: {
     anatomical_region: "",
     professional_report_markdown: "",
     report_sections: {
+      plain_summary: "",
       exam_overview: "",
       technical_summary: "",
       detailed_findings: [],
@@ -709,6 +734,7 @@ function buildInsufficientDataResponse(params: {
     anatomical_region: "",
     professional_report_markdown: "",
     report_sections: {
+      plain_summary: "",
       exam_overview: "",
       technical_summary: "",
       detailed_findings: [],
@@ -778,6 +804,7 @@ function buildFallbackResponse(params: {
       anatomical_region: region,
       professional_report_markdown: "",
       report_sections: {
+        plain_summary: "",
         exam_overview: "",
         technical_summary: "",
         detailed_findings: vertexViews.map((v) => v.finding.findings).filter(Boolean),
@@ -821,6 +848,7 @@ function buildFallbackResponse(params: {
     anatomical_region: region,
     professional_report_markdown: "",
     report_sections: {
+      plain_summary: "",
       exam_overview: "",
       technical_summary: "",
       detailed_findings: vertexViews.map((v) => v.finding.findings).filter(Boolean),
@@ -842,6 +870,16 @@ export async function POST(req: Request) {
     await writer.write(
       encoder.encode(`data: ${JSON.stringify({ type, data })}\n\n`)
     );
+  };
+
+  const sendProgress = async (
+    phase: string,
+    percent: number,
+    message: string,
+    extra?: Record<string, unknown>
+  ) => {
+    const pct = Math.min(100, Math.max(0, Math.round(percent)));
+    await sendEvent("progress", { phase, percent: pct, message, ...extra });
   };
 
   const finalize = async () => {
@@ -984,6 +1022,11 @@ export async function POST(req: Request) {
         step: "received",
         message: language === "tr" ? "Görüntüler alındı." : "Images received successfully.",
       });
+      await sendProgress(
+        "received",
+        5,
+        language === "tr" ? "Görüntüler alındı." : "Images received successfully."
+      );
 
       // ──── NORMALIZATION ────
       logPhase("normalize-start");
@@ -996,6 +1039,13 @@ export async function POST(req: Request) {
           ? "Görüntüler analiz için hazırlandı."
           : "Images were normalized for analysis.",
       });
+      await sendProgress(
+        "normalized",
+        12,
+        language === "tr"
+          ? "Görüntüler analiz için hazırlandı."
+          : "Images were normalized for analysis."
+      );
 
       // ──── INTAKE CLASSIFICATION (pre-analysis upload-type detection) ────
       await sendEvent("status", {
@@ -1004,43 +1054,68 @@ export async function POST(req: Request) {
           ? "Yükleme türü analiz ediliyor..."
           : "Analyzing upload type...",
       });
+      await sendProgress(
+        "intake",
+        18,
+        language === "tr"
+          ? "Yükleme türü analiz ediliyor..."
+          : "Analyzing upload type..."
+      );
 
       logPhase("intake-start");
       const perImageIntake: PerImageIntakeResult[] = [];
 
-      // Chunked parallel intake to avoid sequential hang on many images
-      for (let c = 0; c < preparedImages.length; c += CHUNK_SIZE) {
-        const chunk = preparedImages.slice(c, c + CHUNK_SIZE);
-        const chunkResults = await Promise.allSettled(
-          chunk.map(async (img, ci) => {
-            const idx = c + ci;
-            try {
-              const rawBase64 = img.originalBase64.includes(",")
-                ? img.originalBase64.split(",")[1]
-                : img.originalBase64;
-              const result = await googleHealthcare.runIntakeClassification(rawBase64, language);
-              return { imageIndex: idx, fileName: img.fileName, ...result };
-            } catch (err) {
-              const msg = err instanceof Error ? err.message : "Intake failed";
-              console.warn(`[analyze] Intake failed for ${img.fileName}:`, msg);
-              return {
-                imageIndex: idx,
-                fileName: img.fileName,
-                upload_type: "unknown" as const,
-                modality_guess: "",
-                anatomical_region_guess: "",
-                image_plane: "unknown" as const,
-                diagnostic_value: "low" as const,
-                contains_ui_overlay: false,
-                contains_report_text: false,
-                confidence: 0,
-                reasons: [`Intake error: ${msg}`],
-              };
-            }
-          })
-        );
-        for (const r of chunkResults) {
-          if (r.status === "fulfilled") perImageIntake.push(r.value as PerImageIntakeResult);
+      // Single image fast path — skip intake classification, use defaults
+      if (preparedImages.length === 1) {
+        perImageIntake.push({
+          imageIndex: 0,
+          fileName: preparedImages[0].fileName,
+          upload_type: "diagnostic-image",
+          modality_guess: "",
+          anatomical_region_guess: "",
+          image_plane: "unknown",
+          diagnostic_value: "medium",
+          contains_ui_overlay: false,
+          contains_report_text: false,
+          confidence: 50,
+          reasons: ["intake-skip-single"],
+        });
+        logPhase("intake-skip-single");
+      } else {
+        // Chunked parallel intake to avoid sequential hang on many images
+        for (let c = 0; c < preparedImages.length; c += CHUNK_SIZE) {
+          const chunk = preparedImages.slice(c, c + CHUNK_SIZE);
+          const chunkResults = await Promise.allSettled(
+            chunk.map(async (img, ci) => {
+              const idx = c + ci;
+              try {
+                const rawBase64 = img.originalBase64.includes(",")
+                  ? img.originalBase64.split(",")[1]
+                  : img.originalBase64;
+                const result = await googleHealthcare.runIntakeClassification(rawBase64, language);
+                return { imageIndex: idx, fileName: img.fileName, ...result };
+              } catch (err) {
+                const msg = err instanceof Error ? err.message : "Intake failed";
+                console.warn(`[analyze] Intake failed for ${img.fileName}:`, msg);
+                return {
+                  imageIndex: idx,
+                  fileName: img.fileName,
+                  upload_type: "unknown" as const,
+                  modality_guess: "",
+                  anatomical_region_guess: "",
+                  image_plane: "unknown" as const,
+                  diagnostic_value: "low" as const,
+                  contains_ui_overlay: false,
+                  contains_report_text: false,
+                  confidence: 0,
+                  reasons: [`Intake error: ${msg}`],
+                };
+              }
+            })
+          );
+          for (const r of chunkResults) {
+            if (r.status === "fulfilled") perImageIntake.push(r.value as PerImageIntakeResult);
+          }
         }
       }
 
@@ -1111,6 +1186,11 @@ export async function POST(req: Request) {
             ? "Rapor görüntüleri tespit edildi. OCR desteklenmiyor."
             : "Report images detected. OCR not supported.",
         });
+        await sendProgress(
+          "report-only",
+          100,
+          language === "tr" ? "Rapor yanıtı hazırlanıyor." : "Preparing report response."
+        );
         const reportOnlyResult = buildReportOnlyResponse({
           language,
           fileNames: preparedImages.map((img) => img.fileName),
@@ -1250,6 +1330,23 @@ export async function POST(req: Request) {
             await sendEvent("log", { phase: "vertex-analysis-warning", fileName: val.fileName, message: val.error });
           }
         }
+
+        const vertexPct =
+          imagesToProcess.length > 0
+            ? 28 +
+              Math.round((vertexViews.length / imagesToProcess.length) * 47)
+            : 75;
+        await sendProgress(
+          "vertex",
+          vertexPct,
+          language === "tr"
+            ? `${vertexViews.length}/${imagesToProcess.length} görüntü analiz edildi`
+            : `${vertexViews.length} of ${imagesToProcess.length} images analyzed`,
+          {
+            completed: vertexViews.length,
+            total: imagesToProcess.length,
+          }
+        );
       }
       logPhase(`vertex-batch-done count=${vertexViews.length}/${imagesToProcess.length}`);
 
@@ -1298,6 +1395,11 @@ export async function POST(req: Request) {
           };
         }
 
+        await sendProgress(
+          "finalize-fallback",
+          99,
+          language === "tr" ? "Rapor tamamlanıyor..." : "Finalizing report..."
+        );
         await sendEvent("result", { ...fallbackResult, meta });
         return;
       }
@@ -1323,6 +1425,13 @@ export async function POST(req: Request) {
           ? `Çalışma analizi: ${studyMeta.studyAdequacy}, ${studyMeta.diagnosticImageCount} tanısal görüntü`
           : `Study analysis: ${studyMeta.studyAdequacy}, ${studyMeta.diagnosticImageCount} diagnostic images`,
       });
+      await sendProgress(
+        "study-aggregation",
+        79,
+        language === "tr"
+          ? "Çalışma düzeyinde bulgular birleştiriliyor..."
+          : "Merging findings at study level..."
+      );
 
       // ──── CROSS-IMAGE RECONCILIATION ────
       const reconciliationBlock = buildReconciliationBlock(
@@ -1348,6 +1457,13 @@ export async function POST(req: Request) {
             ? "Çapraz görüntü karşılaştırması oluşturuldu"
             : "Cross-image reconciliation generated",
         });
+        await sendProgress(
+          "reconciliation",
+          82,
+          language === "tr"
+            ? "Çapraz görüntü karşılaştırması tamamlandı"
+            : "Cross-image reconciliation complete"
+        );
       }
 
       // ──── DERIVE ADDITIONAL DATA REQUESTS (deterministic) ────
@@ -1396,6 +1512,13 @@ export async function POST(req: Request) {
             ? "İlgili tıbbi literatür araştırılıyor."
             : "Searching relevant medical literature.",
         });
+        await sendProgress(
+          "literature",
+          84,
+          language === "tr"
+            ? "Tıbbi literatür taranıyor..."
+            : "Searching medical literature..."
+        );
 
         try {
           literatureCitations = await fetchLiterature(litInput);
@@ -1405,6 +1528,11 @@ export async function POST(req: Request) {
         } catch (err) {
           console.warn("[analyze] Literature search failed, proceeding without:", err instanceof Error ? err.message : err);
         }
+        await sendProgress(
+          "literature-done",
+          86,
+          language === "tr" ? "Literatür adımı tamamlandı" : "Literature step complete"
+        );
       }
 
       // ──── SYNTHESIS (Claude) ────
@@ -1415,6 +1543,13 @@ export async function POST(req: Request) {
           ? "Bulgular profesyonel rapor haline getiriliyor."
           : "Converting findings into a professional report.",
       });
+      await sendProgress(
+        "synthesis",
+        literatureCitations.length ? 88 : 85,
+        language === "tr"
+          ? "Profesyonel rapor metni oluşturuluyor..."
+          : "Generating professional report text..."
+      );
 
       const routeQuestionHint = getRouteQuestionHints(
         primaryDomainRoute,
@@ -1568,6 +1703,12 @@ export async function POST(req: Request) {
         });
       }
 
+      await sendProgress(
+        "synthesis-done",
+        94,
+        language === "tr" ? "Rapor doğrulanıyor..." : "Validating report..."
+      );
+
       if (!finalResult) {
         finalResult = buildFallbackResponse({
           language,
@@ -1623,7 +1764,7 @@ export async function POST(req: Request) {
           language === "tr" ? "Çapraz görüntü karşılaştırması" : "Cross-image reconciliation",
           language === "tr" ? "Sentez raporu" : "Synthesis report",
         ],
-        whatCouldNotBeDetermined: (finalResult.report_sections?.limitations ?? []).slice(0, 3),
+        whatCouldNotBeDetermined: [],
         analyzedFileCount: imagesToProcess.length,
         analyzedSliceCount: undefined,
         displayUnit: "images",
@@ -1716,6 +1857,11 @@ export async function POST(req: Request) {
         };
       }
 
+      await sendProgress(
+        "complete",
+        99,
+        language === "tr" ? "Rapor hazır" : "Report ready"
+      );
       await sendEvent("result", { ...resultWithSupplementary, meta: successMeta });
       logPhase("complete", { images: imagesToProcess.length, vertexOk: vertexViews.length, vertexFail: vertexErrors.length });
       await sendEvent("trace", {
@@ -1770,6 +1916,7 @@ export async function POST(req: Request) {
         anatomical_region: "",
         professional_report_markdown: "",
         report_sections: {
+          plain_summary: "",
           exam_overview: "",
           technical_summary: "",
           detailed_findings: [],

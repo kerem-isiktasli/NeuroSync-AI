@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useState, useEffect, useRef } from "react";
+import React, { useState, useEffect, useRef, useMemo } from "react";
 import { useSettings } from "@/context/SettingsContext";
 import { useReports } from "@/context/ReportsContext";
 import { useCredits } from "@/context/CreditsContext";
@@ -119,7 +119,7 @@ export default function ChatView({ onBuyCredits }: { onBuyCredits?: () => void }
   const { t, language } = useSettings();
   const { toast } = useToast();
   const { balances, canChat, deductForChat } = useCredits();
-  const { activeReport } = useReports();
+  const { activeReport, reports } = useReports();
   const { diagnosisResult, isAnalyzing } = useDiagnosis();
   const { profile, currentIntake } = usePatient();
 
@@ -137,29 +137,57 @@ export default function ChatView({ onBuyCredits }: { onBuyCredits?: () => void }
   type ChatMode = "report" | "general";
   const [chatMode, setChatMode] = useState<ChatMode>(() => (hasReport ? "report" : "general"));
   const [generalHistory, setGeneralHistory] = useState<Array<{ role: "user" | "assistant"; content: string }>>([]);
-  const [generalMessages, setGeneralMessages] = useState<Message[]>(() => [
-    {
-      id: "general-welcome",
-      text:
-        language === "tr"
-          ? "Merhaba! Tıbbi sorularınızı yanıtlamak için buradayım. Semptomlar, hastalıklar veya ne zaman doktora gitmeniz gerektiği hakkında sorabilirsiniz. Kesin tanı koymuyorum, ancak size doğru yönde yardımcı olmaya çalışırım."
-          : "Hello! I'm here to help answer your medical questions. You can ask me about symptoms, conditions, medications, or when to see a doctor. I don't give diagnoses, but I'll help point you in the right direction.",
-      sender: "ai",
-      timestamp: new Date(),
-      status: "read",
-    },
-  ]);
+  const [generalMessages, setGeneralMessages] = useState<Message[]>([]);
+
+  const completedReports = useMemo(
+    () => reports.filter((r) => r.status === "complete").slice(0, 5),
+    [reports]
+  );
+
+  const reportsSummary = useMemo(() => {
+    if (completedReports.length === 0) return null;
+    return completedReports
+      .map((r, i) => {
+        const kf =
+          r.keyFindings?.slice(0, 3).join("; ") || "None recorded";
+        return `Report ${i + 1} (${new Date(r.updatedAt).toLocaleDateString()}): ${r.title || r.fileName}
+Modality: ${r.modality || "Unknown"}
+Region: ${r.anatomicalRegion || "Unknown"}
+Concern level: ${r.concernLevel || "unknown"}
+Summary: ${r.summary || "No summary"}
+Key findings: ${kf}`;
+      })
+      .join("\n\n---\n\n");
+  }, [completedReports]);
 
   useEffect(() => {
+    const welcomeText =
+      completedReports.length > 0
+        ? language === "tr"
+          ? `Merhaba! Tıbbi sorularınızı yanıtlamak için buradayım. **${completedReports.length} tamamlanmış raporunuza erişimim var** — raporlarınızı karşılaştırmamı veya analiz etmemi isteyebilirsiniz.`
+          : `Hello! I'm here to help with your medical questions. **I have access to your ${completedReports.length} completed report${completedReports.length > 1 ? "s" : ""}** — you can ask me to compare or analyze them.`
+        : language === "tr"
+          ? "Merhaba! Tıbbi sorularınızı yanıtlamak için buradayım. Henüz tamamlanmış raporunuz yok, ancak genel sağlık sorularınızı yanıtlayabilirim."
+          : "Hello! I'm here to help with your medical questions. You have no completed reports yet, but I can answer your general health questions.";
+
     setGeneralMessages((prev) => {
-      if (prev.length === 0 || prev[0]?.id !== "general-welcome") return prev;
-      const text =
-        language === "tr"
-          ? "Merhaba! Tıbbi sorularınızı yanıtlamak için buradayım. Semptomlar, hastalıklar veya ne zaman doktora gitmeniz gerektiği hakkında sorabilirsiniz. Kesin tanı koymuyorum, ancak size doğru yönde yardımcı olmaya çalışırım."
-          : "Hello! I'm here to help answer your medical questions. You can ask me about symptoms, conditions, medications, or when to see a doctor. I don't give diagnoses, but I'll help point you in the right direction.";
-      return [{ ...prev[0], text }, ...prev.slice(1)];
+      if (prev.length === 0) {
+        return [
+          {
+            id: "general-welcome",
+            text: welcomeText,
+            sender: "ai",
+            timestamp: new Date(),
+            status: "read",
+          },
+        ];
+      }
+      if (prev[0]?.id === "general-welcome") {
+        return [{ ...prev[0], text: welcomeText }, ...prev.slice(1)];
+      }
+      return prev;
     });
-  }, [language]);
+  }, [language, completedReports.length]);
 
   // Build contextual welcome message
   useEffect(() => {
@@ -345,6 +373,8 @@ export default function ChatView({ onBuyCredits }: { onBuyCredits?: () => void }
           message: msg,
           language: language === "tr" ? "tr" : "en",
           history: generalHistory,
+          reportsSummary: reportsSummary,
+          hasReports: completedReports.length > 0,
         }),
       });
 

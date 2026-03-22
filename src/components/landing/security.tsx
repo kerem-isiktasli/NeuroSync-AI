@@ -2,79 +2,104 @@
 
 import { Shield, Lock, Server, FileCheck, KeyRound, Activity } from "lucide-react"
 
-const securityFeatures = [
-  {
-    icon: Shield,
-    title: "HIPAA Compliant",
-    description: "Full compliance with Health Insurance Portability and Accountability Act regulations for your data protection.",
-  },
+const features = [
   {
     icon: Lock,
     title: "End-to-End Encryption",
-    description: "AES-256 encryption for data at rest and TLS 1.3 for data in transit. Your medical data is never exposed.",
+    description: "AES-256 for data at rest, TLS 1.3 in transit. Your medical data is never exposed.",
+  },
+  {
+    icon: Shield,
+    title: "Firebase Auth Security",
+    description: "Email verification required. Google OAuth supported. All sessions token-verified server-side.",
   },
   {
     icon: Server,
-    title: "SOC 2 Type II Certified",
-    description: "Annual third-party audits verify our security controls meet the highest industry standards.",
+    title: "Firestore Access Rules",
+    description: "Users can only access their own data. Support staff require explicit patient consent to view reports.",
   },
   {
     icon: FileCheck,
-    title: "GDPR Ready",
-    description: "Built-in data governance tools ensure compliance with European data protection regulations.",
+    title: "Data Consent System",
+    description: "Every support ticket requires a consent decision. You choose what staff can see — and can revoke it.",
   },
   {
     icon: KeyRound,
     title: "Role-Based Access",
-    description: "Granular permission controls ensure only you can access sensitive your data.",
+    description: "Separate roles for patients, support staff, and admins. No cross-access without authorization.",
   },
   {
     icon: Activity,
-    title: "Audit Logging",
-    description: "Comprehensive activity logs track every access and modification for regulatory compliance and accountability.",
+    title: "Admin Audit Panel",
+    description: "All config changes are logged with timestamp and actor. Admin panel tracks who changed what and when.",
   },
 ]
 
 export function Security() {
   return (
-    <section id="security" className="relative py-32">
-      <div className="mx-auto max-w-7xl px-6">
+    <section id="security" className="relative py-32"
+      style={{ background: "#0a0f1e" }}>
+      <div className="absolute inset-0 pointer-events-none"
+        style={{
+          backgroundImage: `linear-gradient(rgba(0,212,255,0.03) 1px, transparent 1px),
+            linear-gradient(90deg, rgba(0,212,255,0.03) 1px, transparent 1px)`,
+          backgroundSize: "60px 60px",
+        }} />
+
+      <div className="relative mx-auto max-w-7xl px-6">
         <div className="grid gap-16 lg:grid-cols-2 lg:items-center">
-          {/* Left side */}
           <div>
-            <p className="text-sm font-medium uppercase tracking-widest text-primary mb-4">Security</p>
-            <h2 className="font-display text-4xl font-bold text-foreground md:text-5xl text-balance">
-              Enterprise-Grade Security for Healthcare
+            <p className="text-sm font-mono uppercase tracking-widest mb-4"
+              style={{ color: "#00d4ff" }}>
+              Security
+            </p>
+            <h2 className="text-4xl font-bold md:text-5xl"
+              style={{ color: "#e8edf5" }}>
+              Your Data is Private by Design
             </h2>
-            <p className="mt-6 text-lg text-muted-foreground leading-relaxed">
-              Your data security is a priority. Our platform is built with healthcare-grade security and compliance in mind.
+            <p className="mt-6 text-lg leading-relaxed"
+              style={{ color: "#7a8aa0" }}>
+              Medical data deserves the highest level of protection.
+              Every layer of RapiMed is built with that principle.
             </p>
 
-            {/* Trust badge */}
-            <div className="mt-10 inline-flex items-center gap-4 rounded-2xl border border-primary/20 bg-primary/[0.04] px-6 py-4">
-              <div className="flex h-12 w-12 items-center justify-center rounded-xl bg-primary/20">
-                <Shield className="h-6 w-6 text-primary" />
+            <div className="mt-10 flex items-center gap-4 rounded-2xl px-6 py-5 inline-flex"
+              style={{
+                background: "rgba(0,212,255,0.06)",
+                border: "1px solid rgba(0,212,255,0.2)",
+              }}>
+              <div className="flex h-12 w-12 items-center justify-center rounded-xl"
+                style={{
+                  background: "rgba(0,212,255,0.1)",
+                  border: "1px solid rgba(0,212,255,0.25)",
+                }}>
+                <Shield className="h-6 w-6" style={{ color: "#00d4ff" }} />
               </div>
               <div>
-                <p className="font-display font-bold text-foreground">Zero Data Breaches</p>
-                <p className="text-sm text-muted-foreground">Since platform launch</p>
+                <p className="font-bold" style={{ color: "#e8edf5" }}>
+                  Zero Data Selling
+                </p>
+                <p className="text-sm font-mono" style={{ color: "#7a8aa0" }}>
+                  Your data is never sold or shared
+                </p>
               </div>
             </div>
           </div>
 
-          {/* Right side - Security features grid */}
           <div className="grid gap-4 sm:grid-cols-2">
-            {securityFeatures.map((feature) => (
-              <div
-                key={feature.title}
-                className="group rounded-xl border border-border bg-card p-6 shadow-sm transition-all duration-300 hover:border-primary/20 hover:shadow-md"
-              >
-                <feature.icon className="mb-4 h-5 w-5 text-primary" />
-                <h3 className="font-display text-sm font-bold text-foreground mb-2">
-                  {feature.title}
+            {features.map((f) => (
+              <div key={f.title}
+                className="rounded-xl p-5 transition-all"
+                style={{
+                  background: "rgba(255,255,255,0.02)",
+                  border: "1px solid rgba(255,255,255,0.07)",
+                }}>
+                <f.icon className="mb-3 h-5 w-5" style={{ color: "#00d4ff" }} />
+                <h3 className="text-sm font-bold mb-1.5" style={{ color: "#e8edf5" }}>
+                  {f.title}
                 </h3>
-                <p className="text-xs leading-relaxed text-muted-foreground">
-                  {feature.description}
+                <p className="text-xs leading-relaxed" style={{ color: "#7a8aa0" }}>
+                  {f.description}
                 </p>
               </div>
             ))}

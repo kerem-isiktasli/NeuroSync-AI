@@ -269,6 +269,14 @@ export async function runDicomAnalysisPipeline(
         ? `DICOM çalışması işleniyor (${cappedFiles.length} kesit)...`
         : `Processing DICOM study (${cappedFiles.length} slices)...`,
   });
+  await sendEvent("progress", {
+    phase: "dicom-ingest",
+    percent: 12,
+    message:
+      language === "tr"
+        ? `DICOM işleniyor (${cappedFiles.length} dosya)...`
+        : `Processing DICOM (${cappedFiles.length} files)...`,
+  });
 
   logPhase("assemble-start");
   const study = assembleStudy(cappedFiles);
@@ -311,6 +319,14 @@ export async function runDicomAnalysisPipeline(
         ? "Kesit görüntüleri analiz ediliyor..."
         : "Analyzing slice images...",
   });
+  await sendEvent("progress", {
+    phase: "slice-analysis",
+    percent: 38,
+    message:
+      language === "tr"
+        ? "Kesit analizi çalışıyor..."
+        : "Running slice analysis...",
+  });
 
   logPhase("slice-analysis-start");
   let analysisResult: Awaited<ReturnType<typeof runStudyImageAnalysis>>;
@@ -342,6 +358,17 @@ export async function runDicomAnalysisPipeline(
     };
     logPhase("slice-analysis-FAILED");
   }
+
+  await sendEvent("progress", {
+    phase: "slice-analysis-done",
+    percent: 68,
+    message:
+      language === "tr"
+        ? `Kesit analizi: ${analysisResult.analyzedSliceCount}/${analysisResult.totalSliceCount}`
+        : `Slice analysis: ${analysisResult.analyzedSliceCount}/${analysisResult.totalSliceCount}`,
+    completed: analysisResult.analyzedSliceCount,
+    total: analysisResult.totalSliceCount,
+  });
 
   await sendEvent("log", {
     phase: "dicom-count-checkpoint",
@@ -385,6 +412,14 @@ export async function runDicomAnalysisPipeline(
       language === "tr"
         ? "Vertex AI ile çalışma yorumlanıyor..."
         : "Interpreting study with Vertex AI...",
+  });
+  await sendEvent("progress", {
+    phase: "vertex-synthesis",
+    percent: 78,
+    message:
+      language === "tr"
+        ? "AI çalışma yorumu oluşturuluyor..."
+        : "Generating AI study interpretation...",
   });
 
   const domainRoute = routeToDomain({
@@ -560,6 +595,13 @@ export async function runDicomAnalysisPipeline(
     analysisResult.hadImageAnalysis && analysisResult.sliceFindings.length > 0
       ? analysisResult.avgConfidence / 100
       : 0.5;
+
+  await sendEvent("progress", {
+    phase: "dicom-finalize",
+    percent: 97,
+    message:
+      language === "tr" ? "Rapor paketleniyor..." : "Packaging report...",
+  });
 
   const meta: DicomPipelineMeta = {
     fileNames: names,

@@ -19,7 +19,10 @@ STRICT RULES:
 - Use plain language. Avoid jargon unless you explain it immediately after.
 - Be warm, calm, and reassuring.
 - Always end responses that involve symptoms with: "This information is educational only. Please consult a doctor for personal medical advice."
-- Keep responses focused and concise — 3-5 paragraphs maximum unless the question requires more detail.`;
+- Keep responses focused and concise — 3-5 paragraphs maximum unless the question requires more detail.
+
+If the patient provides report summaries in the conversation context, you CAN and SHOULD analyze them. You have access to the patient's report history when they ask you to compare or review their results. When reports are provided, treat them as real medical data and provide specific, concrete analysis comparing the findings.
+Do not say you cannot see files — the report data is provided as text in the context.`;
 
 const SYSTEM_TR = `Sen RapiMed'in tıbbi asistanısın. Hastalara tıbbi kavramları, belirtileri, durumları ve ne zaman tıbbi yardım almaları gerektiğini anlamalarında yardımcı olursun — doktorun yerini almadan.
 
@@ -30,7 +33,10 @@ KESİN KURALLAR:
 - Sade dil kullan. Tıbbi terimler kullanıyorsan hemen ardından açıkla.
 - Sıcak, sakin ve rahatlatıcı ol.
 - Belirti içeren yanıtları şununla bitir: "Bu bilgi yalnızca eğitim amaçlıdır. Kişisel tıbbi tavsiye için lütfen bir doktora başvurun."
-- Yanıtları odaklı ve kısa tut — gerekmedikçe en fazla 3-5 paragraf.`;
+- Yanıtları odaklı ve kısa tut — gerekmedikçe en fazla 3-5 paragraf.
+
+Sohbet bağlamında hasta rapor özetleri verilirse bunları analiz edebilir ve etmelisin. Hasta sonuçlarını karşılaştırmanı veya incelemeni istediğinde rapor geçmişine erişimin vardır. Raporlar sağlandığında bunları gerçek tıbbi veri olarak ele al ve bulguları somut şekilde karşılaştır.
+Dosya göremiyorum deme — rapor verisi bağlamda metin olarak iletilir.`;
 
 export async function POST(request: Request) {
   if (!process.env.ANTHROPIC_API_KEY) {
@@ -44,10 +50,18 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: "Invalid request body" }, { status: 400 });
   }
 
-  const { message, language = "en", history = [] } = body as {
+  const {
+    message,
+    language = "en",
+    history = [],
+    reportsSummary,
+    hasReports,
+  } = body as {
     message?: string;
     language?: "tr" | "en";
     history?: Array<{ role: "user" | "assistant"; content: string }>;
+    reportsSummary?: string;
+    hasReports?: boolean;
   };
 
   if (!message?.trim()) {
@@ -64,7 +78,16 @@ export async function POST(request: Request) {
       model: activeModel,
       max_tokens: 1024,
       system: language === "tr" ? SYSTEM_TR : SYSTEM_EN,
-      messages: [...recentHistory, { role: "user", content: message }],
+      messages: [
+        ...recentHistory,
+        {
+          role: "user",
+          content:
+            reportsSummary && hasReports
+              ? `[PATIENT REPORT HISTORY]\n${reportsSummary}\n\n[PATIENT QUESTION]\n${message}`
+              : message,
+        },
+      ],
     });
 
     const text = response.content

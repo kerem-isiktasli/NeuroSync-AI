@@ -358,8 +358,16 @@ export function SettingsProvider({ children }: { children: ReactNode }) {
   });
 
   const applyTheme = useCallback((nextTheme: Theme) => {
-    document.documentElement.classList.toggle('dark', nextTheme === 'dark');
-    document.documentElement.style.colorScheme = nextTheme;
+    const root = document.documentElement;
+    if (nextTheme === 'dark') {
+      root.classList.add('dark');
+      root.classList.remove('light');
+    } else {
+      root.classList.remove('dark');
+      root.classList.add('light');
+    }
+    root.setAttribute('data-theme', nextTheme);
+    root.style.colorScheme = nextTheme;
   }, []);
 
   useEffect(() => {

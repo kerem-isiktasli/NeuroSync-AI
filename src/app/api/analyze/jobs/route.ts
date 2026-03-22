@@ -1,9 +1,16 @@
 /**
  * POST /api/analyze/jobs — Create async analysis job.
- * Returns 202 with jobId. Processing runs in background.
+ * Returns 202 with jobId.
+ *
+ * If REDIS_URL is set: job is enqueued for BullMQ workers (`npm run worker:analysis`).
+ * Otherwise: processing runs in-process via setImmediate (dev / single-node).
+ *
+ * Job state + payload: Firestore `analysis_jobs` when FIREBASE_APPLICATION_CREDENTIALS is set,
+ * else in-memory (lost on restart; workers must share Firestore for multi-process).
  */
 import { NextResponse } from "next/server";
-import { createJob } from "@/lib/analysisJobStore";
+import { createJobWithPayload } from "@/lib/analysisJobStore";
+import { enqueueAnalysisJob, isAnalysisQueueEnabled } from "@/lib/analysisQueue";
 import { runDicomAnalysisJob } from "@/lib/runDicomAnalysisJob";
 
 export const runtime = "nodejs";
@@ -34,14 +41,31 @@ export async function POST(req: Request) {
       );
     }
 
-    const job = createJob();
+    const languageRaw = body.language || "en";
+    const language = languageRaw === "tr" ? "tr" : "en";
 
-    setImmediate(() => {
-      void runDicomAnalysisJob(job.id, {
-        images,
-        language: body.language || "en",
-      });
+    const job = await createJobWithPayload({
+      images,
+      language,
     });
+
+    if (isAnalysisQueueEnabled()) {
+      if (!process.env.FIREBASE_APPLICATION_CREDENTIALS?.trim()) {
+        return NextResponse.json(
+          {
+            error:
+              "REDIS_URL is set but FIREBASE_APPLICATION_CREDENTIALS is missing. " +
+              "Workers run in separate processes and need Firestore to load job payloads.",
+          },
+          { status: 503 }
+        );
+      }
+      await enqueueAnalysisJob(job.id);
+    } else {
+      setImmediate(() => {
+        void runDicomAnalysisJob(job.id);
+      });
+    }
 
     return NextResponse.json(
       { jobId: job.id, status: "pending" },

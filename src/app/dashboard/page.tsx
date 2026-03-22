@@ -143,6 +143,15 @@ export default function DashboardPage() {
     }
   }, [currentReportId, activeReportId, setActiveReportId]);
 
+  useEffect(() => {
+    const handler = () => {
+      setIntakeMode("detailed");
+      setQuickModeSelected(false);
+    };
+    document.addEventListener("switch-to-detailed", handler);
+    return () => document.removeEventListener("switch-to-detailed", handler);
+  }, []);
+
   const handleOpenReportFromList = useCallback((reportId: string) => {
     openReport(reportId);
     setActiveView('chat');
@@ -440,7 +449,7 @@ export default function DashboardPage() {
                  {/* Page heading */}
                  <motion.header
                    variants={itemVariants}
-                   className="shrink-0 px-0 py-4 mb-2 flex flex-col gap-4"
+                   className="shrink-0 px-0 py-4 mb-0 flex flex-col gap-4"
                    style={{ borderBottom: "1px solid rgba(255,255,255,0.05)" }}
                  >
                    <div>
@@ -540,12 +549,14 @@ export default function DashboardPage() {
                    </div>
                  </motion.header>
 
-                 <div className={`flex-1 flex min-h-0 overflow-y-auto pb-24 ${diagnosisResult ? "flex-row gap-4 md:gap-6" : "flex-col"}`}>
+                 <div
+                   className={`flex-1 flex min-h-0 pb-24 ${diagnosisResult ? "overflow-hidden flex-row gap-4 md:gap-6 pt-3" : "overflow-y-auto flex-col"}`}
+                 >
                  {/* Workflow Column — stage-owned layout: Questions own page when active */}
                  <motion.section 
                    variants={itemVariants}
                    className={`flex flex-col shrink-0 ${
-                     diagnosisResult ? "w-full lg:w-[42%] lg:max-w-xl gap-4 md:gap-6" 
+                     diagnosisResult ? "w-full lg:w-[42%] lg:max-w-xl gap-4 md:gap-6 min-h-0" 
                      : intakeComplete ? "w-full max-w-2xl mx-auto gap-4" 
                      : "w-full max-w-5xl mx-auto gap-8"
                    }`}
@@ -747,16 +758,13 @@ export default function DashboardPage() {
                                {language === "tr" ? "Düzenle" : "Edit"}
                              </button>
                            </div>
-                           <div
-                             className="flex flex-col justify-center min-h-[320px] rounded-2xl"
-                             style={{
-                               background: "rgba(255,255,255,0.02)",
-                               border: "1px solid rgba(255,255,255,0.07)",
-                               backdropFilter: "blur(10px)",
-                             }}
-                           >
-                             <div className="w-full p-5 md:p-6">
-                               <UploadZone canAnalyze={canAnalyze} onUploadSuccess={handleUploadSuccess} />
+                           <div className="w-full min-h-0">
+                             <div className="w-full px-0 py-1 md:py-2">
+                               <UploadZone
+                                 canAnalyze={canAnalyze}
+                                 onUploadSuccess={handleUploadSuccess}
+                                 quickModeSelected={quickModeSelected}
+                               />
                              </div>
                            </div>
                          </>
@@ -764,7 +772,7 @@ export default function DashboardPage() {
                      </>
                    )}
 
-                   {/* Privacy notice */}
+                   {!diagnosisResult && (
                    <div
                      className="flex items-start gap-2 px-4 py-3 rounded-xl"
                      style={{
@@ -779,16 +787,17 @@ export default function DashboardPage() {
                          : "Your saved profile and report answers are used only to improve analysis quality, choose the correct processing method, and provide better explanations inside RapiMed. This information is stored for your future analyses and can be edited from your profile/settings."}
                      </p>
                    </div>
+                   )}
                  </motion.section>
 
                  {/* Right Column: Report — only when results exist */}
                  {diagnosisResult && (
-                   <section className="flex-1 flex flex-col min-w-0 min-h-[420px]">
+                   <section className="flex-1 flex flex-col min-w-0 min-h-0">
                      <motion.div
                        variants={itemVariants}
                        initial={{ opacity: 0, x: 12 }}
                        animate={{ opacity: 1, x: 0 }}
-                       className="flex-1 flex flex-col overflow-hidden min-h-[380px] rounded-2xl"
+                       className="flex-1 flex flex-col min-h-0 max-h-full rounded-2xl"
                        style={{
                          background: "rgba(255,255,255,0.02)",
                          border: "1px solid rgba(255,255,255,0.07)",
@@ -797,14 +806,14 @@ export default function DashboardPage() {
                      >
                        <div className="shrink-0 pt-5 px-5 md:pt-6 md:px-6 pb-2" style={{ borderBottom: "1px solid rgba(255,255,255,0.06)" }}>
                          <h2 className="text-lg font-bold flex items-center gap-2" style={{ color: "#e8edf5" }}>
-                           <img src="public/logo.png" alt="RapiMed" className="w-5 h-5 object-contain" />
+                           <Activity size={18} style={{ color: "#00d4ff" }} />
                            Report interpretation
                          </h2>
                          <p className="text-xs font-mono mt-1" style={{ color: "#3d4f66" }}>
                            AI-assisted analysis. Not a diagnosis — always consult a physician.
                          </p>
                        </div>
-                       <div className="flex-1 min-h-0 overflow-hidden flex flex-col pt-4 pb-6 px-5 md:px-6">
+                       <div className="flex-1 min-h-0 overflow-y-auto overscroll-contain pt-4 pb-2 px-5 md:px-6">
                          <AIReport />
                        </div>
                      </motion.div>

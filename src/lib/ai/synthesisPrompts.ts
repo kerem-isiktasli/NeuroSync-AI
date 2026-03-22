@@ -21,7 +21,20 @@ KESİN KURALLAR:
 - Tek görüntü veya tek kesit varsa bunun güvenilirliği sınırladığını vurgula.
 - study_metadata'da imageCount > 1 veya birden fazla düzlem (sagittal, axial, coronal) varken ASLA "tek görüntü" veya "tek [düzlem] görüntüsüne dayalı değerlendirme" deme. Gerçek görüntü sayısı ve mevcut düzlemleri kullan.
 - Beyin MR'da BELİRGİN ANORMALLİKLER (kitle, kontrast tutan lezyon, halka tarzı kontrastlanma, nekroz, çevresel ödem) varsa: GİZLEME. Açıkça yaz: "güçlü anormal beyin MR ekran görüntüleri", "kontrast tutan intrakraniyal kitle lezyonu(ları)", "acil değerlendirme gerektiren bulgu". "Kesin tanı ekran görüntülerinden belirlenemez" diyebilirsin ama görünen anormal bulguları MUTLAKA tanımla.
-- SERVİKAL LORDOZ KURALI: "Servikal lordoz kaybı" veya "servikal lordoz düzleşmesi" ifadesini YALNIZCA extracted_findings içinde yüksek güvenle mevcut olduğunda kullanın. Servikal lordoz değerlendirmesi YALNIZCA lateral sagittal T1 veya T2 sekansında yapılabilir. Görüntüler koronal, aksiyel veya lokalizör/scout ise lordoz yorumunu tamamen atlayın.
+
+HASTA-DOSTU DİL KURALLARI:
+- plain_summary MUTLAKA günlük dilde, tıp bilgisi olmayan birinin anlayabileceği TEK cümle olmalıdır.
+  YANLIŞ: "C4-C7 düzeyinde çok seviyeli dejeneratif disk hastalığı saptanmıştır."
+  DOĞRU: "Boyun MR'ınızda birkaç omur arasında ağrınıza neden olabilecek disk yıpranması görülüyor."
+- exam_overview: Önce sade dil özeti, sonra teknik detay.
+- detailed_findings: Her bulguyu şu şekilde yazın: önce sade açıklama, sonra parantez içinde tıbbi terim.
+  Örnek: "5. ve 6. boyun omurları arasında disk yıpranması (C5-C6 disk dejenerasyonu) — bu ana bulgudur."
+- questions_for_doctor: Hastanın perspektifinden, birinci şahıs olarak yazın.
+  DOĞRU: "Bu bulgu günlük hayatımı nasıl etkiler?"
+  YANLIŞ: "Bu bulgunun klinik önemi nedir?"
+- interpretive_impression: Hastaya bir sonraki adımını söyleyen sade dil cümlesiyle bitmeli.
+- important_terms: Raporda kullanılan TÜM tıbbi terimler dahil edilmeli.
+- follow_up_considerations: Hastanın gerçekten yapabileceği net eylemler olarak yazın.
 
 AYIRICI DEĞERLENDİRME KURALLARI:
 - Olasılıkları yalnızca görünür bulgulara dayandır.
@@ -39,18 +52,10 @@ YORUMLAYICI İZLENİM KURALLARI:
 - "Bulgular ... ile uyumlu olabilir", "Bu özellikler ... açısından endişe uyandırmaktadır", "Klinik korelasyon önerilir" gibi dikkatli ifadeler kullan.
 - Kesin tanı koyma, en önemli olası yorumu özetle.
 
-ÇOKLU GÖRÜNTÜ SENTEZİ KURALI: study_metadata'da imageCount > 3 olduğunda, report_sections.exam_overview MUTLAKA şu 3-5 cümlelik sentez paragrafıyla açılmalıdır:
-1. Görüntülerin çoğunluğunda görülen dominant bulgu örüntüsünü belirtin
-2. Bulguların birden fazla düzlem/sekans boyunca tutarlı olup olmadığını belirtin
-3. Tek en önemli klinik bulguyu adlandırın
-4. En acil klinik önceliği tek cümlede belirtin
-exam_overview'ı görüntü bazlı açıklamalarla AÇMAYIN. Önce sentez, sonra detay.
-
 DOKTOR SORULARI KURALLARI:
 - questions_for_doctor HER ZAMAN bulgulara ve görüntüleme türüne özel olmalıdır.
 - Jenerik sorulardan kaçın. Somut, bulgularla bağlantılı sorular üret.
 - Ayırıcı tanılardan (differential_considerations) türeyen sorular ekle.
-- ACİL BULGULAR SORU KURALI: concern_level "high" veya "urgent-review" olduğunda, questions_for_doctor şunlardan en az birini İÇERMELİDİR: uzman yönlendirmesi zamanlaması (nöroşirürji, nöroloji, onkoloji), acil değerlendirme gerekip gerekmediği, hangi belirtilerin acil servise başvuruyu gerektirdiği. Endişe düzeyi acil olduğunda "Bu bulgular ne kadar önemli?" sorusunu SORMAYIN — yanıt bulgulardan zaten açıktır.
 
 ÖZELLİK KORUMA KURALLARI (ÇOK ÖNEMLİ):
 - Anatomik seviye: Çıkarımda C3-C4, L4-L5 gibi belirli seviyeler varsa ASLA "omurga" veya "disk" gibi genel ifadelere indirgeme. Aynen koru.
@@ -88,6 +93,7 @@ DOKTOR SORULARI KURALLARI:
   "modality": "string — görüntüleme modalitesi",
   "anatomical_region": "string — anatomik bölge",
   "professional_report_markdown": "string — profesyonel radyoloji rapor formatında markdown metin",
+  "plain_summary": "string — Tıbbi olmayan bir kişi için günlük dilde EN önemli bulguyu açıklayan TEK cümle. Örnek: Boyun MR'ınızda ağrınıza neden olabilecek disk yıpranması görülüyor.",
   "report_sections": {
     "exam_overview": "string — inceleme özeti",
     "technical_summary": "string — teknik özellikler",
@@ -126,7 +132,22 @@ STRICT RULES:
 - If the input is only one image or one slice, explicitly say this limits confidence.
 - NEVER claim "single image" or "evaluation based on a single [plane] image" when study_metadata shows imageCount > 1 or multiple planes (sagittal, axial, coronal). Use the actual image count and planes available.
 - For brain MRI with OBVIOUS ABNORMALITIES (mass, enhancing lesion, ring-enhancing, necrosis, surrounding edema): DO NOT suppress. State clearly: "strongly abnormal brain MRI screenshots", "enhancing intracranial mass lesion(s)", "concerning urgent abnormality". You may add "exact diagnosis cannot be determined from screenshots alone" but you MUST describe the visible abnormal findings.
-- CERVICAL LORDOSIS RULE: Do NOT state "loss of cervical lordosis" or "straightening of cervical lordosis" unless this finding appears explicitly in the extracted_findings with high confidence. Cervical lordosis can ONLY be assessed from a true lateral sagittal T1 or T2 sequence. If the images are coronal, axial, or localizer/scout images, omit any lordosis comment entirely.
+
+CIVILIAN-FRIENDLY LANGUAGE RULES:
+- plain_summary MUST be ONE sentence in everyday language a non-doctor can instantly understand.
+  BAD: "Multilevel degenerative disc disease identified at C4-C7."
+  GOOD: "Your neck MRI shows disc wear between several vertebrae that may be causing your pain."
+- exam_overview: Start with the plain-language takeaway, THEN the technical detail.
+- detailed_findings: Write each finding as: plain explanation first, medical term in parentheses after.
+  Example: "Disc wear between neck vertebrae 5 and 6 (C5-C6 disc degeneration) — this is the main finding."
+- questions_for_doctor: Write from the patient's perspective in first person.
+  GOOD: "What does this finding mean for my daily life?"
+  BAD: "What is the clinical significance of this finding?"
+- interpretive_impression: Must end with one plain-language sentence telling the patient their next step.
+  Example: "You should discuss these findings with your doctor who can confirm what treatment options are available."
+- important_terms: Must include EVERY medical term used anywhere in the report.
+- follow_up_considerations: Write as clear action items the patient can actually do.
+  GOOD: "Schedule an appointment with your neurologist." NOT: "Neurology referral warranted."
 
 DIFFERENTIAL CONSIDERATIONS RULES:
 - Base possibilities only on visible findings.
@@ -144,18 +165,10 @@ INTERPRETIVE IMPRESSION RULES:
 - Use cautious phrasing like "Findings may be compatible with...", "These features raise concern for...", "Clinical correlation is recommended".
 - Do not give a definitive diagnosis, but summarize the most important plausible interpretation.
 
-MULTI-IMAGE SYNTHESIS RULE: When study_metadata shows imageCount > 3, report_sections.exam_overview MUST open with a true synthesis paragraph of 3-5 sentences that:
-1. States the dominant finding pattern seen across the majority of images (not just one image)
-2. States whether findings are consistent across multiple planes/sequences
-3. Names the single most clinically important finding
-4. States the most urgent clinical priority in one sentence
-Do NOT open exam_overview with per-image descriptions. Synthesize first, detail second.
-
 DOCTOR QUESTIONS RULES:
 - questions_for_doctor MUST ALWAYS be specific to the findings and imaging type.
 - Avoid generic questions. Generate concrete, finding-linked questions.
 - Include questions derived from the differential_considerations.
-- URGENT FINDINGS QUESTIONS RULE: When concern_level is "high" or "urgent-review", questions_for_doctor MUST include at least one question about: timing of specialist referral (neurosurgery, neurology, oncology as appropriate), whether emergency evaluation is needed, or what symptoms would indicate immediate emergency department visit. Do NOT ask "How clinically important are these findings?" when the concern level is urgent — the answer is already obvious from the findings.
 
 SPECIFICITY PRESERVATION RULES (CRITICAL):
 - Anatomical level: NEVER collapse specific levels (e.g. C3–C4, L4–L5) into generic terms like "spine" or "disc". Preserve them exactly.
@@ -193,6 +206,7 @@ OUTPUT — RETURN ONLY VALID JSON:
   "modality": "string — imaging modality",
   "anatomical_region": "string — anatomical region",
   "professional_report_markdown": "string — professional radiology report format in markdown",
+  "plain_summary": "string — ONE sentence in plain everyday language explaining the most important finding, written for a non-medical person. Example: Your neck MRI shows disc wear that may be causing your pain.",
   "report_sections": {
     "exam_overview": "string — examination overview",
     "technical_summary": "string — technical characteristics",
@@ -290,9 +304,7 @@ export function buildSynthesisUserMessage(params: {
     symptomTrend?: string;
     studyTimeline?: string;
     bodyRegion?: string;
-    doctorReviewSummary?: string;
   } | null;
-  isQuickMode?: boolean;
 }): string {
   const {
     language,
@@ -311,7 +323,6 @@ export function buildSynthesisUserMessage(params: {
     reportOcrResult,
     reportFusionResult,
     patientContext,
-    isQuickMode = false,
   } = params;
 
   const payload: Record<string, unknown> = {
@@ -373,17 +384,8 @@ export function buildSynthesisUserMessage(params: {
     payload.question_guidance = routeQuestionHint;
   }
 
-  if (patientContext && !isQuickMode) {
-    payload.patient_context = {
-      ...patientContext,
-      mode: "detailed",
-    };
-  } else if (patientContext?.knownDiagnoses?.length || patientContext?.chronicConditions?.length) {
-    payload.patient_context = {
-      knownDiagnoses: patientContext.knownDiagnoses,
-      chronicConditions: patientContext.chronicConditions,
-      mode: "quick",
-    };
+  if (patientContext) {
+    payload.patient_context = patientContext;
   }
 
   const interpretiveNote = language === "tr"
@@ -419,19 +421,11 @@ export function buildSynthesisUserMessage(params: {
       : ` official_report_ocr IS PRESENT: This is the official report text (extracted via OCR). Present it in a patient-friendly format. Use structured_findings and impression_or_conclusion. This report takes precedence as the official radiologist-written document.`
     : "";
 
-  const patientCtxNote = isQuickMode
-    ? patientContext?.knownDiagnoses?.length || patientContext?.chronicConditions?.length
-      ? language === "tr"
-        ? ` HIZLI MOD: Hastanın kaydedilmiş profil bilgileri mevcut (tanılar: ${patientContext?.knownDiagnoses?.join(", ") || "belirtilmemiş"}, kronik durumlar: ${patientContext?.chronicConditions?.join(", ") || "belirtilmemiş"}). Bu bilgileri bulgular için arka plan bağlamı olarak kullan. Semptom odaklı analiz yapma — yalnızca görüntülere odaklan.`
-        : ` QUICK MODE: Patient's saved profile is available (diagnoses: ${patientContext?.knownDiagnoses?.join(", ") || "none"}, chronic conditions: ${patientContext?.chronicConditions?.join(", ") || "none"}). Use this as background context only. Do not perform symptom-focused analysis — focus only on the images.`
-      : language === "tr"
-        ? " HIZLI MOD: Ek hasta bağlamı yok. Yalnızca görüntü bulgularına odaklan."
-        : " QUICK MODE: No additional patient context. Focus solely on image findings."
-    : patientContext
-      ? language === "tr"
-        ? ` DETAYLI MOD — patient_context MEVCUT: Hastanın şikayeti: "${patientContext.primaryConcern || "belirtilmemiş"}". Semptom süresi: ${patientContext.symptomDuration || "bilinmiyor"}. Semptom trendi: ${patientContext.symptomTrend || "bilinmiyor"}. Bilinen tanılar: ${patientContext.knownDiagnoses?.join(", ") || "yok"}. Kronik durumlar: ${patientContext.chronicConditions?.join(", ") || "yok"}. Bu klinik bağlamı bulgularla ilişkilendirerek yorumla. Güvenlik seviyesi: ${patientContext.safetyLevel === "elevated" ? "YÜKSEK — kırmızı bayrak dilini güçlendir" : "standart"}.`
-        : ` DETAILED MODE — patient_context IS PRESENT: Patient's primary concern: "${patientContext.primaryConcern || "not specified"}". Symptom duration: ${patientContext.symptomDuration || "unknown"}. Symptom trend: ${patientContext.symptomTrend || "unknown"}. Known diagnoses: ${patientContext.knownDiagnoses?.join(", ") || "none"}. Chronic conditions: ${patientContext.chronicConditions?.join(", ") || "none"}. Correlate these clinical details with the imaging findings. Safety level: ${patientContext.safetyLevel === "elevated" ? "ELEVATED — strengthen red flag language" : "standard"}.`
-      : "";
+  const patientCtxNote = patientContext
+    ? language === "tr"
+      ? ` patient_context MEVCUT: Hastanın bilinen tanıları, şikayeti ve semptomları verilmiştir. Bunları bulguları yorumlarken bağlam olarak kullan. Güvenlik seviyesi ${patientContext.safetyLevel === "elevated" ? "YÜKSEK — kırmızı bayrak ve acil uyarı dili güçlendir" : "standart"}. Rapor stili: ${patientContext.reportStyle ?? "full"}. Takip çalışması ise karşılaştırma bağlamını göz önünde bulundur.`
+      : ` patient_context IS PRESENT: Patient's known diagnoses, concern, and symptoms are provided. Use these as context when interpreting findings. Safety level is ${patientContext.safetyLevel === "elevated" ? "ELEVATED — strengthen red flag and urgent warning language" : "standard"}. Report style: ${patientContext.reportStyle ?? "full"}. If this is a follow-up study, consider comparison context.`
+    : "";
 
   const fusionNote = reportFusionResult
     ? language === "tr"
@@ -453,13 +447,8 @@ export function buildSynthesisUserMessage(params: {
         ? "Verilen yapılandırılmış bulgulara dayanarak profesyonel, detaylı ve hasta-dostu bir tıbbi rapor üret. Uzman bulgularındaki detayları koru. Olası açıklamaları (differential_considerations) sırala. Ciddi olasılıklar varsa gizleme. Eksik veri varsa additional_data_context bilgisini raporun bağlamına dahil et. Eğer literature_context verilmişse, bu bilgileri destekleyici bağlam olarak kullan ama kanıt gibi sunma. Rapor bölümlerini eksiksiz doldur."
         : "Generate a professional, detailed, and patient-friendly medical report based on the provided structured findings. Preserve specialist-level detail. Rank differential_considerations from most to least likely. Do not suppress serious possibilities if findings support them. If additional_data_context is provided, incorporate it as context about what data is still needed. If literature_context is provided, use it as supporting context but not as proof. Fill all report sections completely.";
 
-  const languageRule =
-    language === "en"
-      ? " CRITICAL: ALL output text must be in English only. Do not output any Turkish text anywhere in the JSON response, including inside limitations, what_cannot_be_determined, exam_overview, or any other field. If language is en, every string value in the JSON must be English."
-      : " KRİTİK: Tüm çıktı metni yalnızca Türkçe olmalıdır. JSON yanıtındaki hiçbir alanda İngilizce metin bulunmamalıdır.";
-
   payload.instruction =
-    `${baseInstruction}${studyContextNote}${interpretiveNote}${questionNote}${studyNote}${intakeNote}${reportOcrNote}${fusionNote}${patientCtxNote}${languageRule}`;
+    `${baseInstruction}${studyContextNote}${interpretiveNote}${questionNote}${studyNote}${intakeNote}${reportOcrNote}${fusionNote}${patientCtxNote}`;
 
   return JSON.stringify(payload, null, 2);
 }

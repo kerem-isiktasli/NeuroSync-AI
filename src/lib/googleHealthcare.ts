@@ -33,7 +33,7 @@ import {
   type IntakeImagePlane,
 } from './ai/intakePrompts';
 import { VERTEX_CONFIG, getVertexEndpoint } from './vertexConfig';
-import { loadRuntimeConfig } from './runtimeConfig';
+import { loadRuntimeConfig, type RuntimeConfig } from './runtimeConfig';
 import {
   getStructuredReconciliationPrompt,
   parseStructuredReconciliation,
@@ -66,18 +66,66 @@ import type { MedicalDomain } from './medical/domainRouter';
 
 const SCOPES = ['https://www.googleapis.com/auth/cloud-platform'];
 
+/** Caps concurrent Vertex generateContent calls per Node process (multi-instance serverless still multiplies load). */
+const VERTEX_GLOBAL_CONCURRENCY = Math.max(
+  1,
+  Math.min(16, parseInt(process.env.VERTEX_GLOBAL_CONCURRENCY ?? "2", 10) || 2)
+);
+let vertexPermitsAvailable = VERTEX_GLOBAL_CONCURRENCY;
+const vertexPermitWaiters: Array<() => void> = [];
+
+async function acquireVertexPermit(): Promise<void> {
+  if (vertexPermitsAvailable > 0) {
+    vertexPermitsAvailable--;
+    return;
+  }
+  await new Promise<void>((resolve) => {
+    vertexPermitWaiters.push(resolve);
+  });
+}
+
+function releaseVertexPermit(): void {
+  if (vertexPermitWaiters.length > 0) {
+    const next = vertexPermitWaiters.shift()!;
+    next();
+  } else {
+    vertexPermitsAvailable++;
+  }
+}
+
+function resolveVertexImageModel(rc: RuntimeConfig): string {
+  const m = rc.vertexModel?.trim();
+  if (m && m.length >= 3) return m;
+  return VERTEX_CONFIG.extractionModel;
+}
+
 const retryWithBackoff = async (
   fn: () => Promise<Response>,
-  maxRetries = 3,
-  baseDelayMs = 2000
+  maxRetries = 6,
+  baseDelayMs = 2500
 ): Promise<Response> => {
   for (let attempt = 0; attempt <= maxRetries; attempt++) {
     const res = await fn();
     if (res.status !== 429) return res;
     if (attempt === maxRetries) return res;
-    const delay = baseDelayMs * Math.pow(2, attempt) + Math.random() * 1000;
+
+    let delay = baseDelayMs * Math.pow(2, attempt) + Math.random() * 1500;
+    const ra = res.headers.get("retry-after");
+    if (ra) {
+      const sec = parseInt(ra, 10);
+      if (Number.isFinite(sec) && sec > 0) {
+        delay = Math.max(delay, sec * 1000);
+      } else {
+        const until = Date.parse(ra);
+        if (!Number.isNaN(until)) {
+          delay = Math.max(delay, until - Date.now());
+        }
+      }
+    }
+    await res.text().catch(() => {});
+    delay = Math.min(Math.max(delay, 500), 120_000);
     console.warn(
-      `[Vertex] 429 on attempt ${attempt + 1}, retrying in ${Math.round(delay)}ms...`
+      `[Vertex] 429 on attempt ${attempt + 1}/${maxRetries + 1}, retrying in ${Math.round(delay)}ms...`
     );
     await new Promise((r) => setTimeout(r, delay));
   }
@@ -218,8 +266,7 @@ export class VertexImageService {
   }): Promise<string> {
     const { model, prompt, imageBase64, token, signal, maxTokens } = params;
     const runtimeConfig = await loadRuntimeConfig();
-    const activeModel =
-      model || runtimeConfig.vertexModel || VERTEX_CONFIG.extractionModel;
+    const activeModel = model || resolveVertexImageModel(runtimeConfig);
     const endpoint = getVertexEndpoint(activeModel);
     if (process.env.NODE_ENV !== "production") {
       console.log(`[VertexImage] Calling model=${activeModel}, endpoint=${endpoint}`);
@@ -242,34 +289,39 @@ export class VertexImageService {
       },
     };
 
-    const response = await retryWithBackoff(() =>
-      fetch(endpoint, {
-        method: 'POST',
-        headers: {
-          'Authorization': `Bearer ${token}`,
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify(body),
-        signal,
-      })
-    );
+    await acquireVertexPermit();
+    try {
+      const response = await retryWithBackoff(() =>
+        fetch(endpoint, {
+          method: 'POST',
+          headers: {
+            'Authorization': `Bearer ${token}`,
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify(body),
+          signal,
+        })
+      );
 
-    if (response.status === 403) {
-      console.error(`[VertexImage] IAM 403 on model ${activeModel}`);
-      throw new VertexHttpError(403, response.statusText);
-    }
-
-    if (!response.ok) {
-      const errText = await response.text().catch(() => "");
-      console.error(`[VertexImage] HTTP ${response.status} on model=${activeModel}, endpoint=${endpoint}:`, errText?.slice(0, 400));
-      if (response.status === 404) {
-        console.error(`[VertexImage] Model 404 — "${activeModel}" not found. Use VERTEX_MODEL env to override. Valid models: gemini-2.5-flash, gemini-2.5-pro`);
+      if (response.status === 403) {
+        console.error(`[VertexImage] IAM 403 on model ${activeModel}`);
+        throw new VertexHttpError(403, response.statusText);
       }
-      throw new VertexHttpError(response.status, response.statusText, errText);
-    }
 
-    const data = await response.json();
-    return extractTextFromGeminiResponse(data);
+      if (!response.ok) {
+        const errText = await response.text().catch(() => "");
+        console.error(`[VertexImage] HTTP ${response.status} on model=${activeModel}, endpoint=${endpoint}:`, errText?.slice(0, 400));
+        if (response.status === 404) {
+          console.error(`[VertexImage] Model 404 — "${activeModel}" not found. Use VERTEX_MODEL env to override. Valid models: gemini-2.5-flash, gemini-2.5-pro`);
+        }
+        throw new VertexHttpError(response.status, response.statusText, errText);
+      }
+
+      const data = await response.json();
+      return extractTextFromGeminiResponse(data);
+    } finally {
+      releaseVertexPermit();
+    }
   }
 
   private async callGeminiText(params: {
@@ -280,8 +332,7 @@ export class VertexImageService {
   }): Promise<string> {
     const { prompt, token, signal, maxTokens } = params;
     const runtimeConfig = await loadRuntimeConfig();
-    const activeModel =
-      runtimeConfig.vertexModel || VERTEX_CONFIG.extractionModel;
+    const activeModel = resolveVertexImageModel(runtimeConfig);
     const endpoint = getVertexEndpoint(activeModel);
 
     const body = {
@@ -295,25 +346,30 @@ export class VertexImageService {
       },
     };
 
-    const response = await retryWithBackoff(() =>
-      fetch(endpoint, {
-        method: "POST",
-        headers: {
-          Authorization: `Bearer ${token}`,
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify(body),
-        signal,
-      })
-    );
+    await acquireVertexPermit();
+    try {
+      const response = await retryWithBackoff(() =>
+        fetch(endpoint, {
+          method: "POST",
+          headers: {
+            Authorization: `Bearer ${token}`,
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify(body),
+          signal,
+        })
+      );
 
-    if (!response.ok) {
-      const errText = await response.text().catch(() => "");
-      throw new VertexHttpError(response.status, response.statusText, errText);
+      if (!response.ok) {
+        const errText = await response.text().catch(() => "");
+        throw new VertexHttpError(response.status, response.statusText, errText);
+      }
+
+      const data = await response.json();
+      return extractTextFromGeminiResponse(data);
+    } finally {
+      releaseVertexPermit();
     }
-
-    const data = await response.json();
-    return extractTextFromGeminiResponse(data);
   }
 
   /**
@@ -341,9 +397,11 @@ export class VertexImageService {
     const timer = setTimeout(() => controller.abort(), INTAKE_TIMEOUT_MS);
 
     try {
+      const runtimeConfig = await loadRuntimeConfig();
+      const imageModel = resolveVertexImageModel(runtimeConfig);
       const prompt = getIntakePrompt(language);
       const raw = await this.callGemini({
-        model: VERTEX_CONFIG.classificationModel,
+        model: imageModel,
         prompt,
         imageBase64: rawBase64,
         token,
@@ -908,10 +966,11 @@ Return ONLY valid JSON: { "text": "concatenated extracted text" }`;
     const timer = setTimeout(() => controller.abort(), CLASSIFY_TIMEOUT_MS);
 
     try {
+      const runtimeConfig = await loadRuntimeConfig();
+      const imageModel = resolveVertexImageModel(runtimeConfig);
       const prompt = getClassificationPrompt(language);
-      const model = VERTEX_CONFIG.classificationModel;
       const raw = await this.callGemini({
-        model,
+        model: imageModel,
         prompt,
         imageBase64,
         token,
@@ -977,9 +1036,11 @@ Return ONLY valid JSON: { "text": "concatenated extracted text" }`;
 
       let raw: string;
       const runtimeConfig = await loadRuntimeConfig();
-      let model = runtimeConfig.vertexModel || VERTEX_CONFIG.extractionModel;
+      const extractionModel = resolveVertexImageModel(runtimeConfig);
+      const model = extractionModel;
 
       raw = await this.callGemini({
+        model: extractionModel,
         prompt,
         imageBase64,
         token,
@@ -1060,6 +1121,8 @@ Return ONLY valid JSON: { "text": "concatenated extracted text" }`;
     }
 
     const rawBase64 = imageBase64.includes(',') ? imageBase64.split(',')[1] : imageBase64;
+    const runtimeSnapshot = await loadRuntimeConfig();
+    const primaryVertexModel = resolveVertexImageModel(runtimeSnapshot);
 
     // STEP 1: Classification
     console.log("[VertexImage] Step 1: Classification...");
@@ -1084,7 +1147,7 @@ Return ONLY valid JSON: { "text": "concatenated extracted text" }`;
 
     // STEP 2: Specialist Extraction
     if (process.env.NODE_ENV !== "production") {
-      console.log(`[VertexImage] Using extraction model: ${VERTEX_CONFIG.extractionModel}`);
+      console.log(`[VertexImage] Specialist extraction model: ${primaryVertexModel}`);
     }
     console.log(`[VertexImage] Step 2: Specialist extraction (${domainRoute})...`);
     const { extraction, model } = await this.runExtraction({

@@ -1,7 +1,7 @@
 "use client";
 
 import React, { useState, useCallback } from "react";
-import { ClipboardList, AlertCircle } from "lucide-react";
+import { ClipboardList, AlertCircle, Paperclip } from "lucide-react";
 import { OptionChipGrid } from "@/components/ui/option-chip";
 import { usePatient } from "@/context/PatientContext";
 import type {
@@ -499,6 +499,81 @@ export default function ReportIntakeForm({ language, compact = false }: ReportIn
             invalid={isMissing("hasWrittenReport")}
           />
         </div>
+
+        {currentIntake.hasWrittenReport === "yes" && (
+          <div
+            className="mt-4 p-4 rounded-xl space-y-3"
+            style={{
+              background: "rgba(0,212,255,0.04)",
+              border: "1px solid rgba(0,212,255,0.15)",
+            }}
+          >
+            <p className="text-xs font-semibold" style={{ color: "#00d4ff" }}>
+              {language === "tr"
+                ? "Doktor raporunuzu ekleyin"
+                : "Attach your doctor report"}
+            </p>
+            <p className="text-xs" style={{ color: "#7a8aa0" }}>
+              {language === "tr"
+                ? "PDF veya görsel olarak yükleyin, ya da içeriği metin olarak yapıştırın."
+                : "Upload as PDF or image, or paste the content as text below."}
+            </p>
+
+            <label
+              className="flex items-center gap-2 px-4 py-2.5 rounded-xl cursor-pointer transition-all w-fit text-sm"
+              style={{
+                background: "rgba(255,255,255,0.04)",
+                border: "1px solid rgba(255,255,255,0.1)",
+                color: "#e8edf5",
+              }}
+            >
+              <Paperclip size={14} />
+              {language === "tr"
+                ? "Rapor Yükle (PDF/Görsel)"
+                : "Upload Report (PDF/Image)"}
+              <input
+                type="file"
+                className="hidden"
+                accept=".pdf,image/*"
+                onChange={(e) => {
+                  const file = e.target.files?.[0];
+                  if (file) {
+                    patch({ doctorReportFile: file.name });
+                  }
+                }}
+              />
+            </label>
+            {currentIntake.doctorReportFile && (
+              <p className="text-xs font-mono" style={{ color: "#00ff88" }}>
+                ✓ {currentIntake.doctorReportFile}
+              </p>
+            )}
+
+            <div>
+              <p className="text-xs mb-1.5" style={{ color: "#7a8aa0" }}>
+                {language === "tr"
+                  ? "veya rapor metnini buraya yapıştırın:"
+                  : "or paste report text here:"}
+              </p>
+              <textarea
+                value={currentIntake.doctorReviewSummary || ""}
+                onChange={(e) => patch({ doctorReviewSummary: e.target.value })}
+                rows={4}
+                placeholder={
+                  language === "tr"
+                    ? "Doktor rapor metnini buraya yapıştırın..."
+                    : "Paste your doctor report text here..."
+                }
+                className="w-full px-3 py-2.5 rounded-xl text-sm outline-none resize-none"
+                style={{
+                  background: "rgba(255,255,255,0.04)",
+                  border: "1px solid rgba(255,255,255,0.08)",
+                  color: "#e8edf5",
+                }}
+              />
+            </div>
+          </div>
+        )}
 
         <Divider />
 
