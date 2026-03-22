@@ -1,15 +1,32 @@
 "use client";
 
-import React, { useState } from "react";
-import { useSettings } from "@/context/SettingsContext";
+import React from "react";
+import { useSettings, type LandingViewId } from "@/context/SettingsContext";
 import { useToast } from "@/hooks/use-toast";
-import { Moon, Sun, Globe, Shield, Mail, User, Settings, Bell } from "lucide-react";
+import { useCredits } from "@/context/CreditsContext";
+import {
+  Moon,
+  Sun,
+  Globe,
+  Shield,
+  Mail,
+  User,
+  Settings,
+  Bell,
+  UserCircle,
+  Sparkles,
+} from "lucide-react";
 import { motion } from "framer-motion";
 import ProfileForm from "@/features/intake/ProfileForm";
+import AccountSettingsSection from "@/features/dashboard/components/AccountSettingsSection";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { cn } from "@/lib/utils";
 
-export default function SettingsView() {
+interface SettingsViewProps {
+  onOpenSubscription?: () => void;
+}
+
+export default function SettingsView({ onOpenSubscription }: SettingsViewProps) {
   const {
     language,
     setLanguage,
@@ -17,9 +34,14 @@ export default function SettingsView() {
     toggleTheme,
     preferences,
     togglePreference,
+    reduceMotion,
+    setReduceMotion,
+    defaultLandingView,
+    setDefaultLandingView,
     t,
   } = useSettings();
   const { toast } = useToast();
+  const { balances } = useCredits();
 
   const handleThemeToggle = () => {
     toggleTheme();
@@ -78,8 +100,8 @@ export default function SettingsView() {
         </h2>
         <p className="text-sm font-mono mt-0.5" style={{ color: "#7a8aa0" }}>
           {isTr
-            ? "Profil, dil, tema ve bildirimler."
-            : "Profile, language, theme, and notifications."}
+            ? "Hesap, dil, tema, bildirimler ve tıbbi profil."
+            : "Account, language, theme, notifications, and medical profile."}
         </p>
       </header>
 
@@ -103,6 +125,17 @@ export default function SettingsView() {
           >
             <Settings size={16} />
             {isTr ? "Genel" : "General"}
+          </TabsTrigger>
+          <TabsTrigger
+            value="account"
+            className={cn(
+              "flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition-all border border-transparent",
+              "data-[state=active]:bg-[rgba(0,212,255,0.1)] data-[state=active]:border-[rgba(0,212,255,0.25)] data-[state=active]:text-[#00d4ff]",
+              "data-[state=inactive]:text-[#7a8aa0] data-[state=inactive]:hover:text-[#e8edf5]"
+            )}
+          >
+            <UserCircle size={16} />
+            {t("account_tab")}
           </TabsTrigger>
           <TabsTrigger
             value="medical"
@@ -237,6 +270,132 @@ export default function SettingsView() {
               </button>
             </div>
 
+            {/* Reduce motion */}
+            <div
+              className="rounded-xl p-4 flex items-center justify-between"
+              style={{
+                background: "rgba(255,255,255,0.02)",
+                border: "1px solid rgba(255,255,255,0.07)",
+              }}
+            >
+              <div className="flex items-center gap-3">
+                <div
+                  className="w-9 h-9 rounded-lg flex items-center justify-center"
+                  style={{ background: "rgba(0,212,255,0.08)", color: "#00d4ff" }}
+                >
+                  <Sparkles size={18} />
+                </div>
+                <div>
+                  <h4 className="font-medium text-sm" style={{ color: "#e8edf5" }}>
+                    {t("reduce_motion")}
+                  </h4>
+                  <p className="text-xs" style={{ color: "#7a8aa0" }}>
+                    {t("reduce_motion_desc")}
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => {
+                  setReduceMotion(!reduceMotion);
+                  toast({
+                    title: t("settings") + " saved",
+                    description: isTr ? "Tercih güncellendi." : "Preference updated.",
+                  });
+                }}
+                className="w-11 h-6 rounded-full p-1 transition-colors duration-200"
+                style={
+                  reduceMotion
+                    ? { background: "rgba(0,212,255,0.3)" }
+                    : { background: "rgba(255,255,255,0.08)" }
+                }
+              >
+                <div
+                  className={cn(
+                    "w-4 h-4 rounded-full border shadow-sm transform transition-transform duration-200",
+                    reduceMotion ? "translate-x-5" : "translate-x-0"
+                  )}
+                  style={{ background: "#e8edf5", borderColor: "rgba(255,255,255,0.15)" }}
+                />
+              </button>
+            </div>
+
+            {/* Default landing view */}
+            <div
+              className="rounded-xl p-4 space-y-3"
+              style={{
+                background: "rgba(255,255,255,0.02)",
+                border: "1px solid rgba(255,255,255,0.07)",
+              }}
+            >
+              <h4 className="font-medium text-sm" style={{ color: "#e8edf5" }}>
+                {t("default_start_view")}
+              </h4>
+              <div className="flex flex-wrap gap-2">
+                {(
+                  [
+                    { id: "dashboard" as const, label: t("default_view_dashboard") },
+                    { id: "records" as const, label: t("default_view_records") },
+                    { id: "chat" as const, label: t("default_view_chat") },
+                  ] satisfies { id: LandingViewId; label: string }[]
+                ).map((opt) => (
+                  <button
+                    key={opt.id}
+                    type="button"
+                    onClick={() => {
+                      setDefaultLandingView(opt.id);
+                      toast({
+                        title: t("settings") + " saved",
+                        description: isTr ? "Varsayılan sayfa kaydedildi." : "Default page saved.",
+                      });
+                    }}
+                    className={cn(
+                      "px-3 py-1.5 rounded-lg text-xs font-medium transition-all border",
+                      defaultLandingView === opt.id
+                        ? "border-[rgba(0,212,255,0.35)] bg-[rgba(0,212,255,0.12)] text-[#00d4ff]"
+                        : "border-transparent bg-white/[0.03] text-[#7a8aa0] hover:text-[#e8edf5]"
+                    )}
+                  >
+                    {opt.label}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            {/* Credits snapshot */}
+            <div
+              className="rounded-xl p-4 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3"
+              style={{
+                background: "rgba(255,255,255,0.02)",
+                border: "1px solid rgba(255,255,255,0.07)",
+              }}
+            >
+              <div>
+                <h4 className="font-medium text-sm mb-1" style={{ color: "#e8edf5" }}>
+                  {t("credits_summary")}
+                </h4>
+                <p className="text-xs font-mono" style={{ color: "#7a8aa0" }}>
+                  <span style={{ color: "#00d4ff" }}>{balances.reportTokens}</span> report ·{" "}
+                  <span style={{ color: "#00ff88" }}>{balances.agentTokens}</span> agent ·{" "}
+                  <span style={{ color: "#ffaa00" }}>{balances.supportTokens}</span> support
+                </p>
+              </div>
+              {onOpenSubscription && (
+                <button
+                  type="button"
+                  onClick={onOpenSubscription}
+                  className="px-4 py-2 rounded-xl text-xs font-semibold shrink-0"
+                  style={{
+                    background: "rgba(0,212,255,0.12)",
+                    border: "1px solid rgba(0,212,255,0.25)",
+                    color: "#00d4ff",
+                  }}
+                >
+                  {t("go_to_subscription")}
+                </button>
+              )}
+            </div>
+
             {/* Purchase History — compact */}
             <div>
               <div className="flex items-center justify-between mb-2">
@@ -244,7 +403,7 @@ export default function SettingsView() {
                   {t("purchase_history")}
                 </h3>
                 <span className="text-[10px] text-theme-text-muted uppercase tracking-wider">
-                  Sample
+                  {t("demo_data")}
                 </span>
               </div>
               <div className="rounded-2xl bg-theme-surface-elevated border border-theme-border overflow-hidden">
@@ -290,6 +449,18 @@ export default function SettingsView() {
                   </tbody>
                 </table>
               </div>
+            </div>
+          </TabsContent>
+
+          <TabsContent value="account" className="m-0 outline-none">
+            <div
+              className="rounded-xl p-5"
+              style={{
+                background: "rgba(255,255,255,0.02)",
+                border: "1px solid rgba(255,255,255,0.07)",
+              }}
+            >
+              <AccountSettingsSection />
             </div>
           </TabsContent>
 

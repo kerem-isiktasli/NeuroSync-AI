@@ -7,6 +7,11 @@ service cloud.firestore {
         && request.auth.uid == userId;
     }
 
+    /** Global nickname registry — server (Admin SDK) only; clients use /api/profile/nickname */
+    match /nicknames/{nick} {
+      allow read, write: if false;
+    }
+
     match /analysisIntakes/{intakeId} {
       allow create: if request.auth != null
         && request.resource.data.userId == request.auth.uid;

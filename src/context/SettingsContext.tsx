@@ -4,6 +4,7 @@ import React, { createContext, useContext, useState, useEffect, useCallback, Rea
 
 type Language = 'en' | 'tr';
 type Theme = 'dark' | 'light';
+export type LandingViewId = 'dashboard' | 'records' | 'chat';
 
 interface SettingsContextType {
   language: Language;
@@ -15,6 +16,10 @@ interface SettingsContextType {
     criticalAlerts: boolean;
   };
   togglePreference: (key: 'marketingEmails' | 'criticalAlerts') => void;
+  reduceMotion: boolean;
+  setReduceMotion: (v: boolean) => void;
+  defaultLandingView: LandingViewId;
+  setDefaultLandingView: (v: LandingViewId) => void;
   t: (key: string) => string;
 }
 
@@ -182,7 +187,37 @@ const translations = {
     "severity_critical": "Critical",
     "details": "Details",
     "references": "References",
-    "view_pdf": "View PDF"
+    "view_pdf": "View PDF",
+    "account_tab": "Account",
+    "nickname": "Nickname",
+    "nickname_hint": "3–32 characters. Letters and numbers; unique across all users.",
+    "nickname_save": "Save nickname",
+    "nickname_clear": "Remove nickname",
+    "nickname_taken": "This nickname is already taken.",
+    "nickname_too_short": "Nickname is too short after normalization.",
+    "nickname_too_long": "Nickname is too long.",
+    "nickname_invalid": "Use letters, numbers, spaces, underscore or hyphen only.",
+    "nickname_checking": "Checking availability…",
+    "profile_photo": "JPEG, PNG, or WebP. Shown in the sidebar.",
+    "change_photo": "Change photo",
+    "remove_photo": "Remove photo",
+    "photo_error": "Could not process image. Try a smaller JPEG or PNG.",
+    "photo_too_large": "Image is still too large after resizing. Try another photo.",
+    "account_email": "Email",
+    "copy_user_id": "Copy user ID (for support)",
+    "copied": "Copied to clipboard",
+    "user_id_label": "User ID",
+    "reduce_motion": "Reduce motion",
+    "reduce_motion_desc": "Minimize animations for a calmer interface.",
+    "default_start_view": "Default page when you open the app",
+    "default_view_dashboard": "Dashboard",
+    "default_view_records": "My reports",
+    "default_view_chat": "New analysis",
+    "credits_summary": "Your balances",
+    "demo_data": "Demo",
+    "manage_subscription_link": "Manage subscription",
+    "saving": "Saving…",
+    "go_to_subscription": "Open subscription"
   },
   tr: {
     "dashboard": "Panel",
@@ -345,7 +380,37 @@ const translations = {
     "severity_critical": "Kritik",
     "details": "Detaylar",
     "references": "Referanslar",
-    "view_pdf": "PDF Görüntüle"
+    "view_pdf": "PDF Görüntüle",
+    "account_tab": "Hesap",
+    "nickname": "Takma ad",
+    "nickname_hint": "3–32 karakter. Harf ve rakam; tüm kullanıcılar arasında benzersiz olmalı.",
+    "nickname_save": "Takma adı kaydet",
+    "nickname_clear": "Takma adı kaldır",
+    "nickname_taken": "Bu takma ad zaten kullanılıyor.",
+    "nickname_too_short": "Takma ad normalize edildikten sonra çok kısa.",
+    "nickname_too_long": "Takma ad çok uzun.",
+    "nickname_invalid": "Yalnızca harf, rakam, boşluk, alt çizgi veya tire kullanın.",
+    "nickname_checking": "Uygunluk kontrol ediliyor…",
+    "profile_photo": "JPEG, PNG veya WebP. Kenar çubuğunda gösterilir.",
+    "change_photo": "Fotoğrafı değiştir",
+    "remove_photo": "Fotoğrafı kaldır",
+    "photo_error": "Görüntü işlenemedi. Daha küçük bir JPEG veya PNG deneyin.",
+    "photo_too_large": "Küçültmeden sonra bile çok büyük. Başka bir fotoğraf deneyin.",
+    "account_email": "E-posta",
+    "copy_user_id": "Kullanıcı kimliğini kopyala (destek için)",
+    "copied": "Panoya kopyalandı",
+    "user_id_label": "Kullanıcı kimliği",
+    "reduce_motion": "Hareketi azalt",
+    "reduce_motion_desc": "Daha sakin bir arayüz için animasyonları azaltır.",
+    "default_start_view": "Uygulamayı açınca varsayılan sayfa",
+    "default_view_dashboard": "Panel",
+    "default_view_records": "Raporlarım",
+    "default_view_chat": "Yeni analiz",
+    "credits_summary": "Bakiyeleriniz",
+    "demo_data": "Demo",
+    "manage_subscription_link": "Aboneliği yönet",
+    "saving": "Kaydediliyor…",
+    "go_to_subscription": "Aboneliğe git"
   }
 };
 
@@ -356,6 +421,8 @@ export function SettingsProvider({ children }: { children: ReactNode }) {
     marketingEmails: true,
     criticalAlerts: true
   });
+  const [reduceMotion, setReduceMotionState] = useState(false);
+  const [defaultLandingView, setDefaultLandingViewState] = useState<LandingViewId>('dashboard');
 
   const applyTheme = useCallback((nextTheme: Theme) => {
     const root = document.documentElement;
@@ -375,10 +442,14 @@ export function SettingsProvider({ children }: { children: ReactNode }) {
     let savedLang: Language | null = null;
     let savedTheme: Theme | null = null;
     let savedPrefs: string | null = null;
+    let savedReduceMotion: string | null = null;
+    let savedLanding: string | null = null;
     try {
       savedLang = localStorage.getItem('neurosync_lang') as Language;
       savedTheme = localStorage.getItem('neurosync_theme') as Theme;
       savedPrefs = localStorage.getItem('neurosync_prefs');
+      savedReduceMotion = localStorage.getItem('neurosync_reduce_motion');
+      savedLanding = localStorage.getItem('neurosync_default_view');
     } catch {}
     
     if (savedLang) setLanguage(savedLang);
@@ -394,6 +465,16 @@ export function SettingsProvider({ children }: { children: ReactNode }) {
       } catch (e) {
         console.error("Failed to parse preferences", e);
       }
+    }
+    if (savedReduceMotion === '1' || savedReduceMotion === 'true') {
+      setReduceMotionState(true);
+    }
+    if (
+      savedLanding === 'dashboard' ||
+      savedLanding === 'records' ||
+      savedLanding === 'chat'
+    ) {
+      setDefaultLandingViewState(savedLanding as LandingViewId);
     }
   }, [applyTheme]);
 
@@ -416,6 +497,29 @@ export function SettingsProvider({ children }: { children: ReactNode }) {
     } catch {}
   }, [preferences]);
 
+  useEffect(() => {
+    const root = document.documentElement;
+    if (reduceMotion) root.classList.add('reduce-motion');
+    else root.classList.remove('reduce-motion');
+    try {
+      localStorage.setItem('neurosync_reduce_motion', reduceMotion ? '1' : '0');
+    } catch {}
+  }, [reduceMotion]);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem('neurosync_default_view', defaultLandingView);
+    } catch {}
+  }, [defaultLandingView]);
+
+  const setReduceMotion = useCallback((v: boolean) => {
+    setReduceMotionState(v);
+  }, []);
+
+  const setDefaultLandingView = useCallback((v: LandingViewId) => {
+    setDefaultLandingViewState(v);
+  }, []);
+
   const toggleTheme = useCallback(() => {
     setTheme(prev => (prev === 'dark' ? 'light' : 'dark'));
   }, []);
@@ -435,8 +539,23 @@ export function SettingsProvider({ children }: { children: ReactNode }) {
     toggleTheme,
     preferences,
     togglePreference,
+    reduceMotion,
+    setReduceMotion,
+    defaultLandingView,
+    setDefaultLandingView,
     t
-  }), [language, preferences, t, theme, togglePreference, toggleTheme]);
+  }), [
+    language,
+    preferences,
+    t,
+    theme,
+    togglePreference,
+    toggleTheme,
+    reduceMotion,
+    setReduceMotion,
+    defaultLandingView,
+    setDefaultLandingView,
+  ]);
 
   return (
     <SettingsContext.Provider value={value}>

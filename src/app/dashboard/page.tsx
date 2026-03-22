@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useEffect, useState, useCallback } from "react";
+import React, { useEffect, useState, useCallback, useRef } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { onAuthStateChanged, signOut } from "firebase/auth";
@@ -38,12 +38,22 @@ type View = 'dashboard' | 'chat' | 'records' | 'subscription' | 'settings' | 'su
 
 export default function DashboardPage() {
   const router = useRouter();
-  const { t } = useSettings();
+  const { t, language, defaultLandingView } = useSettings();
   const { billing } = useBilling();
   const { balances, canAnalyze, deductForAnalysis } = useCredits();
   const { openReport, activeReportId, setActiveReportId } = useReports();
   const { diagnosisResult, loadSavedResult, currentReportId } = useDiagnosis();
-  const { profileComplete, intakeComplete, canUpload, resetIntake, currentIntake, patchIntake, quickModeSelected, setQuickModeSelected } = usePatient();
+  const {
+    profileComplete,
+    intakeComplete,
+    canUpload,
+    resetIntake,
+    currentIntake,
+    patchIntake,
+    quickModeSelected,
+    setQuickModeSelected,
+    profile,
+  } = usePatient();
   const [intakeMode, setIntakeMode] = useState<"quick" | "detailed" | null>(null);
 
   const hasIntakeData =
@@ -56,7 +66,6 @@ export default function DashboardPage() {
       setIntakeMode("detailed");
     }
   }, [profileComplete, intakeComplete, hasIntakeData, intakeMode]);
-  const { language } = useSettings();
   const [loading, setLoading] = useState(true);
   const [userEmail, setUserEmail] = useState<string | null>(null);
   const [userId, setUserId] = useState<string | null>(null);
@@ -67,6 +76,15 @@ export default function DashboardPage() {
   const [activeView, setActiveView] = useState<View>('dashboard');
   const [isSidebarExpanded, setIsSidebarExpanded] = useState(false);
   const [isAdmin, setIsAdmin] = useState(false);
+  const defaultLandingAppliedRef = useRef(false);
+
+  useEffect(() => {
+    if (defaultLandingAppliedRef.current || loading || termsCheckLoading || !termsAccepted) return;
+    defaultLandingAppliedRef.current = true;
+    if (defaultLandingView === "records") setActiveView("records");
+    else if (defaultLandingView === "chat") setActiveView("chat");
+    else setActiveView("dashboard");
+  }, [loading, termsCheckLoading, termsAccepted, defaultLandingView]);
 
   const handleBuyCredits = () => {
     setActiveView('subscription');
@@ -396,20 +414,29 @@ export default function DashboardPage() {
                style={{ borderTop: "1px solid rgba(255,255,255,0.06)" }}
              >
                <div
-                 className="w-8 h-8 rounded-full shrink-0 flex items-center justify-center"
+                 className="w-8 h-8 rounded-full shrink-0 flex items-center justify-center overflow-hidden"
                  style={{
                    background: "rgba(0,212,255,0.12)",
                    border: "1px solid rgba(0,212,255,0.25)",
                  }}
                >
-                 <span className="text-xs font-bold" style={{ color: "#00d4ff" }}>
-                   {userEmail?.slice(0, 1).toUpperCase()}
-                 </span>
+                 {profile.avatarUrl ? (
+                   // eslint-disable-next-line @next/next/no-img-element
+                   <img
+                     src={profile.avatarUrl}
+                     alt=""
+                     className="w-full h-full object-cover"
+                   />
+                 ) : (
+                   <span className="text-xs font-bold" style={{ color: "#00d4ff" }}>
+                     {(profile.nickname?.[0] || userEmail?.[0] || "?").toUpperCase()}
+                   </span>
+                 )}
                </div>
                {isSidebarExpanded && (
                  <div className="flex-1 min-w-0">
                   <p className="text-xs font-medium truncate" style={{ color: "#e8edf5" }}>
-                    {userEmail?.split("@")[0]}
+                    {profile.nickname?.trim() || userEmail?.split("@")[0] || "—"}
                   </p>
                   <p className="text-xs font-mono truncate capitalize" style={{ color: "#3d4f66" }}>
                     {billing.plan}
@@ -840,7 +867,9 @@ export default function DashboardPage() {
                   {activeView === 'chat' && <ChatView onBuyCredits={() => setActiveView('subscription')} />}
                   {activeView === 'records' && <MyReportsView onOpenReport={handleOpenReportFromList} />}
                    {activeView === 'subscription' && <SubscriptionView />}
-                   {activeView === 'settings' && <SettingsView />}
+                   {activeView === 'settings' && (
+                     <SettingsView onOpenSubscription={() => setActiveView('subscription')} />
+                   )}
                    {activeView === 'support' && <SupportView />}
                  </div>
                </motion.div>

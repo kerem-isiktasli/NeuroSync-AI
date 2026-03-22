@@ -87,6 +87,11 @@ export interface PatientProfile {
   commonBodyRegions: BodyRegion[];
   defaultReportPreference: OutputPreference | null;
 
+  /** Display nickname; uniqueness enforced via Firestore `nicknames` registry (server API). */
+  nickname: string | null;
+  /** Firebase Storage download URL for profile photo. */
+  avatarUrl: string | null;
+
   // Metadata
   createdAt: string;
   updatedAt: string;
@@ -103,6 +108,8 @@ export const EMPTY_PATIENT_PROFILE: PatientProfile = {
   priorReportsAvailable: null,
   commonBodyRegions: [],
   defaultReportPreference: null,
+  nickname: null,
+  avatarUrl: null,
   createdAt: new Date().toISOString(),
   updatedAt: new Date().toISOString(),
 };
