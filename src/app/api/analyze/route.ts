@@ -1116,6 +1116,16 @@ export async function POST(req: Request) {
           for (const r of chunkResults) {
             if (r.status === "fulfilled") perImageIntake.push(r.value as PerImageIntakeResult);
           }
+          const done = Math.min(c + CHUNK_SIZE, preparedImages.length);
+          const intakePct =
+            18 + Math.round((done / Math.max(1, preparedImages.length)) * 8);
+          await sendProgress(
+            "intake",
+            intakePct,
+            language === "tr"
+              ? `Yükleme sınıflandırması ${done}/${preparedImages.length}…`
+              : `Classifying uploads ${done}/${preparedImages.length}…`
+          );
         }
       }
 
@@ -1263,6 +1273,14 @@ export async function POST(req: Request) {
             : `Processing ${indicesToProcess.length} images; skipping ${preparedImages.length - indicesToProcess.length}`,
         });
       }
+
+      await sendProgress(
+        "pre-vertex",
+        26,
+        language === "tr"
+          ? "Yapay zekâ görüntü analizi başlıyor…"
+          : "Starting AI image analysis…"
+      );
 
       // ──── CLASSIFICATION + EXTRACTION (chunked with timeout) ────
       logPhase("vertex-batch-start");
@@ -1937,6 +1955,8 @@ export async function POST(req: Request) {
       "Content-Type": "text/event-stream; charset=utf-8",
       "Cache-Control": "no-cache, no-transform",
       Connection: "keep-alive",
+      /** Helps proxies (Vercel/nginx) flush chunks so the UI progress bar updates during long runs */
+      "X-Accel-Buffering": "no",
     },
   });
 }

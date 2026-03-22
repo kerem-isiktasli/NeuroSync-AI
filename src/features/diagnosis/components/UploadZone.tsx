@@ -40,6 +40,17 @@ export default function UploadZone({ canAnalyze = true, onUploadSuccess }: Uploa
     }
   }, [diagnosisResult]);
 
+  /** Drive the bar from live SSE (`/api/analyze`); local state was stuck at 5% until completion. */
+  useEffect(() => {
+    if (!analysisStreamProgress) return;
+    setAnalysisProgress((prev) =>
+      Math.max(prev, analysisStreamProgress.percent)
+    );
+    if (analysisStreamProgress.message) {
+      setAnalysisStep(analysisStreamProgress.message);
+    }
+  }, [analysisStreamProgress]);
+
   const onDragOver = useCallback((e: React.DragEvent) => {
     e.preventDefault();
     if (uploadAllowed) setIsDragging(true);
@@ -52,6 +63,8 @@ export default function UploadZone({ canAnalyze = true, onUploadSuccess }: Uploa
 
   const startAnalysis = async (uploadedFiles: File[]) => {
     resetDiagnosis();
+    setAnalysisProgress(0);
+    setAnalysisStep("");
     setFiles(uploadedFiles);
     setUploadProgress(0);
 
@@ -73,17 +86,24 @@ export default function UploadZone({ canAnalyze = true, onUploadSuccess }: Uploa
       setAnalysisStep(language === "tr" ? "Görüntü gönderiliyor..." : "Sending images...");
       addLog(t('scan_received'));
 
-      await analyzeFiles(uploadedFiles);
-      setAnalysisProgress(100);
-      setAnalysisStep(language === "tr" ? "Tamamlandı!" : "Complete!");
-      setTimeout(() => {
-        setAnalysisProgress(0);
-        setAnalysisStep("");
-      }, 1000);
-
-      setLocalIsAnalyzing(false);
-      setUploadProgress(0);
-      if (onUploadSuccess) onUploadSuccess();
+      try {
+        const ok = await analyzeFiles(uploadedFiles);
+        if (ok) {
+          setAnalysisProgress(100);
+          setAnalysisStep(language === "tr" ? "Tamamlandı!" : "Complete!");
+          setTimeout(() => {
+            setAnalysisProgress(0);
+            setAnalysisStep("");
+          }, 1000);
+          onUploadSuccess?.();
+        } else {
+          setAnalysisProgress(0);
+          setAnalysisStep("");
+        }
+      } finally {
+        setLocalIsAnalyzing(false);
+        setUploadProgress(0);
+      }
     }, 1200);
   };
 

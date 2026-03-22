@@ -74,7 +74,7 @@ function formatAnalysisError(raw: string, err: unknown, language: "tr" | "en"): 
 interface DiagnosisContextType extends DiagnosisState {
   setSelectedOrgan: (organ: string | null) => void;
   analyzeFile: (file: File) => Promise<void>;
-  analyzeFiles: (files: File[], reportFile?: File | null) => Promise<void>;
+  analyzeFiles: (files: File[], reportFile?: File | null) => Promise<boolean>;
   resetDiagnosis: () => void;
   loadSavedResult: (result: DiagnosisResult) => void;
   logs: string[];
@@ -176,63 +176,64 @@ export function DiagnosisProvider({ children }: { children: ReactNode }) {
     setDownloadUrl(null);
     setAnalysisStreamProgress(null);
 
-    // ── Intake-aware routing ──
-    const fileInspection = inspectFiles(files);
-    const routingDecision: RoutingDecision = computeRoutingDecision({
-      profile,
-      intake: currentIntake,
-      fileInspection,
-    });
-
-    // Legacy classifier still used for DICOM detection (battle-tested)
-    const classified: UploadBatchType = classifyUploadBatch(files);
-
-    // Log the routing decision
-    if (process.env.NODE_ENV !== "production") {
-      console.log("[Upload] Intake-aware routing:", {
-        pipeline: routingDecision.pipeline,
-        domain: routingDecision.domain,
-        confidence: routingDecision.confidenceLevel,
-        bodyRegionSource: routingDecision.bodyRegionSource,
-        reportStyle: routingDecision.reportStyle,
-        safetyLevel: routingDecision.safetyLevel,
-        reasons: routingDecision.reasons,
-        conflicts: routingDecision.conflicts,
-        legacyClassified: classified,
-      });
-    }
-
-    // Use routing decision to determine the actual pipeline
-    const useDicom = classified === "dicom-study" || routingDecision.pipeline === "dicom-study";
-
-    const primaryName = files[0]?.name ?? "Image";
-    const primaryType = files[0]?.type || "image/jpeg";
-    const reportId = await createNewReport(primaryName, primaryType);
-    setCurrentReportId(reportId);
-    if (reportId) {
-      await markProcessing(reportId);
-      await saveCurrentIntake(reportId);
-    }
-
-    addLog(
-      routingDecision.confidenceLevel === "high"
-        ? `Routing: ${routingDecision.pipeline} (${routingDecision.domain}) — high confidence`
-        : `Routing: ${routingDecision.pipeline} (${routingDecision.domain}) — ${routingDecision.confidenceLevel} confidence`
-    );
-
-    const callbacks = {
-      onLog: (msg: string) => addLog(msg),
-      onProgress: onStreamProgress,
-      onResult: (result: DiagnosisResult) => {
-        setDiagnosisResult(result);
-        setSelectedOrgan(result.affected_organ);
-        if (reportId) markComplete(reportId, result);
-      },
-      onReport: (text: string) => setReportText(text),
-      onDownloadUrl: (url: string) => setDownloadUrl(url),
-    };
-
+    let reportId: string | null = null;
     try {
+      // ── Intake-aware routing ──
+      const fileInspection = inspectFiles(files);
+      const routingDecision: RoutingDecision = computeRoutingDecision({
+        profile,
+        intake: currentIntake,
+        fileInspection,
+      });
+
+      // Legacy classifier still used for DICOM detection (battle-tested)
+      const classified: UploadBatchType = classifyUploadBatch(files);
+
+      // Log the routing decision
+      if (process.env.NODE_ENV !== "production") {
+        console.log("[Upload] Intake-aware routing:", {
+          pipeline: routingDecision.pipeline,
+          domain: routingDecision.domain,
+          confidence: routingDecision.confidenceLevel,
+          bodyRegionSource: routingDecision.bodyRegionSource,
+          reportStyle: routingDecision.reportStyle,
+          safetyLevel: routingDecision.safetyLevel,
+          reasons: routingDecision.reasons,
+          conflicts: routingDecision.conflicts,
+          legacyClassified: classified,
+        });
+      }
+
+      // Use routing decision to determine the actual pipeline
+      const useDicom = classified === "dicom-study" || routingDecision.pipeline === "dicom-study";
+
+      const primaryName = files[0]?.name ?? "Image";
+      const primaryType = files[0]?.type || "image/jpeg";
+      reportId = await createNewReport(primaryName, primaryType);
+      setCurrentReportId(reportId);
+      if (reportId) {
+        await markProcessing(reportId);
+        await saveCurrentIntake(reportId);
+      }
+
+      addLog(
+        routingDecision.confidenceLevel === "high"
+          ? `Routing: ${routingDecision.pipeline} (${routingDecision.domain}) — high confidence`
+          : `Routing: ${routingDecision.pipeline} (${routingDecision.domain}) — ${routingDecision.confidenceLevel} confidence`
+      );
+
+      const callbacks = {
+        onLog: (msg: string) => addLog(msg),
+        onProgress: onStreamProgress,
+        onResult: (result: DiagnosisResult) => {
+          setDiagnosisResult(result);
+          setSelectedOrgan(result.affected_organ);
+          if (reportId) markComplete(reportId, result);
+        },
+        onReport: (text: string) => setReportText(text),
+        onDownloadUrl: (url: string) => setDownloadUrl(url),
+      };
+
       if (useDicom) {
         await validateDicomBatch(files);
         await runFullDiagnosisDicomBatch(files, callbacks, {
@@ -260,12 +261,14 @@ export function DiagnosisProvider({ children }: { children: ReactNode }) {
           }
         );
       }
+      return true;
     } catch (err) {
       const raw = err instanceof Error ? err.message : "An unknown error occurred during analysis.";
       const message = formatAnalysisError(raw, err, lang);
       setError(message);
       if (reportId) markFailed(reportId, message);
       console.error("Analysis failed:", err);
+      return false;
     } finally {
       setIsAnalyzing(false);
       setAnalysisStreamProgress(null);
