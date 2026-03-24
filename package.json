@@ -95,6 +95,7 @@
     "eslint-config-next": "latest",
     "postcss": "latest",
     "tailwindcss": "latest",
+    "nifti-reader-js": "^0.6.8",
     "tsx": "^4.19.2",
     "typescript": "latest",
     "vitest": "^4.1.0"

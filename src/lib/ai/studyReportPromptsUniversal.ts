@@ -31,6 +31,21 @@ export interface StudyReportVertexInput {
     confidence: number;
   }>;
   domain: MedicalDomain;
+  groundedSliceFindings?: Array<{
+    sliceIndex: number;
+    sliceLabel: string;
+    findings: string[];
+    abnormalities: string[];
+    confidence: number;
+    limitations: string[];
+  }>;
+  coverageSummary?: {
+    totalSlices: number;
+    analyzedSlices: number;
+    sampledIndices: number[];
+    notAnalyzed: number[];
+    coveragePercent: number;
+  };
 }
 
 const SPINE_SCHEMA = `
@@ -140,7 +155,14 @@ export function buildStudyReportPromptUniversal(
   input: StudyReportVertexInput,
   language: "tr" | "en"
 ): string {
-  const { studySummary, sliceStatistics, detectedAnomalies, domain } = input;
+  const {
+    studySummary,
+    sliceStatistics,
+    detectedAnomalies,
+    domain,
+    groundedSliceFindings,
+    coverageSummary,
+  } = input;
   const tr = language === "tr";
 
   const studyBlock = JSON.stringify(studySummary, null, 2);
@@ -149,6 +171,31 @@ export function buildStudyReportPromptUniversal(
     detectedAnomalies.length > 0
       ? JSON.stringify(detectedAnomalies, null, 2)
       : tr ? "Tespit edilen anomali yok." : "No detected anomalies.";
+
+  let evidenceBlock = "";
+  if (groundedSliceFindings?.length) {
+    evidenceBlock += `\n\nGROUNDED SLICE EVIDENCE:\n`;
+    evidenceBlock += groundedSliceFindings
+      .map(
+        (sf) =>
+          `${sf.sliceLabel}: findings=[${sf.findings.join("; ")}] ` +
+          `abnormalities=[${sf.abnormalities.join("; ")}] ` +
+          `confidence=${sf.confidence}`
+      )
+      .join("\n");
+  }
+
+  if (coverageSummary) {
+    const cs = coverageSummary;
+    evidenceBlock +=
+      `\n\nCOVERAGE: ${cs.analyzedSlices} of ` +
+      `${cs.totalSlices} slices analyzed ` +
+      `(${cs.coveragePercent}%). ` +
+      `${cs.totalSlices - cs.analyzedSlices} slices were NOT ` +
+      `analyzed. Any finding reported MUST cite which slice ` +
+      `index it was observed on. Do NOT report findings for ` +
+      `unanalyzed slices.\n`;
+  }
 
   let sys = GENERAL_SYS;
   if (domain === "spine") sys = tr ? SPINE_SYS_TR : SPINE_SYS_EN;
@@ -167,7 +214,7 @@ ${studyBlock}
 ${statsBlock}
 
 ## ${tr ? "Tespit Edilen Anormallikler" : "Detected Anomalies"}
-${anomaliesBlock}
+${anomaliesBlock}${evidenceBlock}
 
 ## ${tr ? "Çıktı Formatı" : "Output Format"}
 ${schema}`;

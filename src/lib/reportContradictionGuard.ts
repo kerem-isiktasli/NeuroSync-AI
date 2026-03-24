@@ -14,21 +14,23 @@ export interface GuardContext {
 }
 
 const SINGLE_IMAGE_PHRASES_TR = [
-  /tek bir (aksiyel|aksiyel|koronal|sagittal) kesit/gi,
-  /tek bir görüntü/gi,
-  /tek bir kesit/gi,
-  /tek kesit/gi,
+  /tek bir (aksiyel|koronal|sagittal|lateral|ap) (kesit|görüntü|grafi|radyografi|görünüm)/gi,
+  /tek bir (görüntü|kesit|grafi|radyografi|görünüm)/gi,
+  /tek (kesit|görüntü|grafi|radyografi|görünüm)/gi,
   /Değerlendirme,\s*tek bir[^.]*üzerinden yapılmıştır/gi,
-  /yalnızca tek (görüntü|kesit)/gi,
+  /yalnızca tek (görüntü|kesit|grafi)/gi,
+  /lateral (görünüm|grafi) (mevcut|bulunmamaktadır|yoktur)/gi,
+  /ap (görünüm|grafi) (mevcut|bulunmamaktadır|yoktur)/gi,
 ];
+
 const SINGLE_IMAGE_PHRASES_EN = [
-  /single axial (slice|image)/gi,
-  /single coronal (slice|image)/gi,
-  /single sagittal (slice|image)/gi,
-  /single image/gi,
-  /single slice/gi,
-  /evaluation based on a single/gi,
-  /only a single (slice|image)/gi,
+  /single (axial|coronal|sagittal|lateral|ap|anteroposterior|pa) (slice|image|radiograph|view)/gi,
+  /single (image|slice|radiograph|view)/gi,
+  /evaluation (is )?based on a single[^.]*/gi,
+  /interpretation (is )?based on a single[^.]*/gi,
+  /only a single (slice|image|radiograph|view)/gi,
+  /a (lateral|ap|anteroposterior) view is not available[^.]*/gi,
+  /complete radiographic series[^.]*is not available/gi,
 ];
 const NO_CONTRAST_PHRASES_TR = [
   /kontrast öncesi görüntüler ve diğer mr sekansları olmadan/gi,

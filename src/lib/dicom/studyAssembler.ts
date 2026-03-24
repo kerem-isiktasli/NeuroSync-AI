@@ -60,7 +60,7 @@ function parseSingle(buf: Buffer | Uint8Array): SliceMetadata | null {
  * Assemble an array of DICOM files into a study object.
  * - Groups by StudyInstanceUID and SeriesInstanceUID
  * - Sorts slices by InstanceNumber, SliceLocation, ImagePositionPatient
- * - Returns the first study/series (or throws if no valid DICOM)
+ * - Selects the study with the most slices, then the largest series within it (or throws if no valid DICOM)
  */
 export function assembleStudy(files: DICOMFile[]): AssembledStudy {
   const parsed: Array<{ metadata: SliceMetadata; file: DICOMFile }> = [];
@@ -76,17 +76,48 @@ export function assembleStudy(files: DICOMFile[]): AssembledStudy {
     throw new Error("No valid DICOM slices could be parsed from the provided files.");
   }
 
-  // Use first slice for study/series UIDs; group by Study+Series
-  const first = parsed[0]!;
-  const studyUID = first.metadata.studyInstanceUID;
-  const seriesUID = first.metadata.seriesInstanceUID;
-  const modality = first.metadata.modality ?? "CT";
+  type ParsedEntry = (typeof parsed)[number];
+  const studyMap = new Map<string, Map<string, ParsedEntry[]>>();
+  for (const p of parsed) {
+    const suid = p.metadata.studyInstanceUID;
+    const serid = p.metadata.seriesInstanceUID;
+    if (!studyMap.has(suid)) studyMap.set(suid, new Map());
+    const seriesMap = studyMap.get(suid)!;
+    if (!seriesMap.has(serid)) seriesMap.set(serid, []);
+    seriesMap.get(serid)!.push(p);
+  }
 
-  // Keep only same study+series
-  const sameSeries = parsed.filter(
-    (p) =>
-      p.metadata.studyInstanceUID === studyUID &&
-      p.metadata.seriesInstanceUID === seriesUID
+  let bestStudyUID = "";
+  let bestStudySize = 0;
+  for (const [sid, seriesMap] of studyMap) {
+    const total = [...seriesMap.values()].reduce((s, v) => s + v.length, 0);
+    if (total > bestStudySize) {
+      bestStudySize = total;
+      bestStudyUID = sid;
+    }
+  }
+
+  const bestStudySeriesMap = studyMap.get(bestStudyUID)!;
+  let bestSeriesUID = "";
+  let bestSeriesSize = 0;
+  for (const [serid, slices] of bestStudySeriesMap) {
+    if (slices.length > bestSeriesSize) {
+      bestSeriesSize = slices.length;
+      bestSeriesUID = serid;
+    }
+  }
+
+  const sameSeries = bestStudySeriesMap.get(bestSeriesUID)!;
+  const studyUID = bestStudyUID;
+  const seriesUID = bestSeriesUID;
+  const modality = sameSeries[0]!.metadata.modality ?? "CT";
+
+  const allSeriesSizes = [...bestStudySeriesMap.entries()]
+    .map(([id, slices]) => `${id.slice(-6)}: ${slices.length} slices`)
+    .join(", ");
+  console.log(
+    `[assembleStudy] Selected series ${seriesUID.slice(-6)} ` +
+      `(${bestSeriesSize} slices). All series: [${allSeriesSizes}]`
   );
 
   // Sort

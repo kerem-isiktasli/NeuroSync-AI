@@ -10,6 +10,27 @@ import { googleHealthcare } from "@/lib/googleHealthcare";
 import { routeToDomain } from "@/lib/medical/domainRouter";
 import type { MedicalDomain } from "@/lib/medical/domainRouter";
 
+/** Max simultaneous Vertex slice calls. Keep at 3 to stay under Vertex RPM quota. */
+const SLICE_CONCURRENCY = 3;
+
+async function withConcurrency<T>(
+  items: T[],
+  concurrency: number,
+  fn: (item: T, index: number) => Promise<void>
+): Promise<void> {
+  let i = 0;
+  const workers = Array.from(
+    { length: Math.min(concurrency, items.length) },
+    async () => {
+      while (i < items.length) {
+        const idx = i++;
+        await fn(items[idx]!, idx);
+      }
+    }
+  );
+  await Promise.all(workers);
+}
+
 /** For small studies (≤ this count), analyze ALL slices. For larger, sample. */
 const SMALL_STUDY_THRESHOLD = 20;
 const MAX_SLICES_TO_ANALYZE = parseInt(
@@ -126,7 +147,6 @@ export async function runStudyImageAnalysis(params: {
 
   const SLICE_TIMEOUT_MS = 45_000;
   const sliceFindings: SliceFinding[] = [];
-  let token: string | undefined;
 
   await sendEvent?.("log", {
     phase: "dicom-slice-plan",
@@ -138,70 +158,84 @@ export async function runStudyImageAnalysis(params: {
       : `Analyzing all ${totalSlices} slices (small study, no sampling).`,
   });
 
-  for (let i = 0; i < sampledIndices.length; i++) {
-    const sliceIndex = sampledIndices[i]!;
-    if (sliceIndex < 0 || sliceIndex >= totalSlices) continue;
+  const sharedToken = await googleHealthcare.getAccessToken();
 
-    await sendEvent?.("status", {
-      step: "slice-analysis",
-      message:
-        language === "tr"
-          ? `Kesit ${i + 1}/${sampledIndices.length} analiz ediliyor...`
-          : `Analyzing slice ${i + 1}/${sampledIndices.length}...`,
-    });
+  await withConcurrency(
+    sampledIndices,
+    SLICE_CONCURRENCY,
+    async (sliceIndex, i) => {
+      if (sliceIndex < 0 || sliceIndex >= totalSlices) return;
 
-    const sliceStart = Date.now();
-    try {
-      const base64 = await renderSliceToPng({
-        volume,
-        sliceIndex,
+      await sendEvent?.("status", {
+        step: "slice-analysis",
+        message:
+          language === "tr"
+            ? `Kesit ${i + 1}/${sampledIndices.length} analiz ediliyor...`
+            : `Analyzing slice ${i + 1}/${sampledIndices.length}...`,
       });
 
-      if (!token) {
-        token = await googleHealthcare.getAccessToken();
+      const sliceStart = Date.now();
+      try {
+        const base64 = await renderSliceToPng({
+          volume,
+          sliceIndex,
+        });
+
+        const result = await Promise.race([
+          googleHealthcare.analyzeDicomSlice(
+            base64,
+            { domain, modality, anatomicalRegion, sliceIndex, totalSlices, language },
+            sharedToken
+          ),
+          new Promise<never>((_, reject) =>
+            setTimeout(
+              () => reject(new Error("Slice analysis timeout")),
+              SLICE_TIMEOUT_MS
+            )
+          ),
+        ]);
+
+        const level = Object.entries(vertebraIndexMap).find(
+          ([, idx]) => idx === sliceIndex
+        )?.[0];
+
+        sliceFindings.push({
+          sliceIndex,
+          vertebraLevel: level,
+          findings: result.findings,
+          abnormalities: result.abnormalities,
+          confidence: result.confidence,
+          limitations: result.limitations,
+          sliceDescription: result.sliceDescription,
+        });
+
+        if (process.env.NODE_ENV !== "production") {
+          console.log(
+            `[studyImageAnalyzer] Slice ${sliceIndex} OK ` +
+              `(${Date.now() - sliceStart}ms)`
+          );
+        }
+      } catch (err) {
+        const errMsg =
+          err instanceof Error ? err.message : String(err);
+        console.warn(
+          `[studyImageAnalyzer] Slice ${sliceIndex} failed ` +
+            `(${Date.now() - sliceStart}ms):`,
+          errMsg
+        );
+        sliceFindings.push({
+          sliceIndex,
+          findings: [],
+          abnormalities: [],
+          confidence: 0,
+          limitations: [`Analysis failed: ${errMsg}`],
+          sliceDescription: "",
+        });
       }
-
-      const result = await Promise.race([
-        googleHealthcare.analyzeDicomSlice(
-          base64,
-          { domain, modality, anatomicalRegion, sliceIndex, totalSlices, language },
-          token
-        ),
-        new Promise<never>((_, reject) =>
-          setTimeout(() => reject(new Error("Slice analysis timeout")), SLICE_TIMEOUT_MS)
-        ),
-      ]);
-
-      const level = Object.entries(vertebraIndexMap).find(
-        ([, idx]) => idx === sliceIndex
-      )?.[0];
-
-      sliceFindings.push({
-        sliceIndex,
-        vertebraLevel: level,
-        findings: result.findings,
-        abnormalities: result.abnormalities,
-        confidence: result.confidence,
-        limitations: result.limitations,
-        sliceDescription: result.sliceDescription,
-      });
-
-      if (process.env.NODE_ENV !== "production") {
-        console.log(`[studyImageAnalyzer] Slice ${sliceIndex} OK (${Date.now() - sliceStart}ms)`);
-      }
-    } catch (err) {
-      const errMsg = err instanceof Error ? err.message : String(err);
-      console.warn(`[studyImageAnalyzer] Slice ${sliceIndex} failed (${Date.now() - sliceStart}ms):`, errMsg);
-      sliceFindings.push({
-        sliceIndex,
-        findings: [],
-        abnormalities: [],
-        confidence: 0,
-        limitations: [`Analysis failed for this slice: ${errMsg}`],
-        sliceDescription: "",
-      });
     }
-  }
+  );
+
+  sliceFindings.sort((a, b) => a.sliceIndex - b.sliceIndex);
 
   const aggregatedFindings = Array.from(
     new Set(

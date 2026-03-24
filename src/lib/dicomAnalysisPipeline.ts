@@ -15,8 +15,12 @@ import { runStudyImageAnalysis, toPathologyObservations } from "@/lib/dicom/stud
 import { googleHealthcare } from "@/lib/googleHealthcare";
 import { routeToDomain } from "@/lib/medical/domainRouter";
 
+// DICOM ingest cap is separate from screenshot analysis cap.
+// MAX_DICOM_SLICES_FOR_AI controls screenshots. DICOM_MAX_FILES controls DICOM ingest.
 const MAX_DICOM_SLICES_INGEST = parseInt(
-  process.env.MAX_DICOM_SLICES_FOR_AI || "120",
+  process.env.DICOM_MAX_FILES ||
+    process.env.MAX_DICOM_SLICES_FOR_AI ||
+    "300",
   10
 );
 
@@ -450,6 +454,28 @@ export async function runDicomAnalysisPipeline(
       depth: volume.depth,
       voxelSpacing: volume.voxelSpacing,
       sliceCount: study.sliceCount,
+    },
+    groundedSliceFindings: analysisResult.sliceFindings.map((sf) => ({
+      sliceIndex: sf.sliceIndex,
+      sliceLabel: `Slice ${sf.sliceIndex + 1}/${analysisResult.totalSliceCount}`,
+      findings: sf.findings,
+      abnormalities: sf.abnormalities,
+      confidence: sf.confidence,
+      limitations: sf.limitations,
+    })),
+    coverageSummary: {
+      totalSlices: analysisResult.totalSliceCount,
+      analyzedSlices: analysisResult.analyzedSliceCount,
+      sampledIndices: analysisResult.sampledIndices,
+      notAnalyzed: Array.from(
+        { length: analysisResult.totalSliceCount },
+        (_, i) => i
+      ).filter((i) => !analysisResult.sampledIndices.includes(i)),
+      coveragePercent: Math.round(
+        (analysisResult.analyzedSliceCount /
+          Math.max(1, analysisResult.totalSliceCount)) *
+          100
+      ),
     },
     detectedAnomalies: pathologyScan.observations.map((o) => ({
       sliceIndex: o.sliceIndex,

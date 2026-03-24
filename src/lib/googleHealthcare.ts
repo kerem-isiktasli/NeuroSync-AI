@@ -99,38 +99,6 @@ function resolveVertexImageModel(rc: RuntimeConfig): string {
   return VERTEX_CONFIG.extractionModel;
 }
 
-const retryWithBackoff = async (
-  fn: () => Promise<Response>,
-  maxRetries = 6,
-  baseDelayMs = 2500
-): Promise<Response> => {
-  for (let attempt = 0; attempt <= maxRetries; attempt++) {
-    const res = await fn();
-    if (res.status !== 429) return res;
-    if (attempt === maxRetries) return res;
-
-    let delay = baseDelayMs * Math.pow(2, attempt) + Math.random() * 1500;
-    const ra = res.headers.get("retry-after");
-    if (ra) {
-      const sec = parseInt(ra, 10);
-      if (Number.isFinite(sec) && sec > 0) {
-        delay = Math.max(delay, sec * 1000);
-      } else {
-        const until = Date.parse(ra);
-        if (!Number.isNaN(until)) {
-          delay = Math.max(delay, until - Date.now());
-        }
-      }
-    }
-    await res.text().catch(() => {});
-    delay = Math.min(Math.max(delay, 500), 120_000);
-    console.warn(
-      `[Vertex] 429 on attempt ${attempt + 1}/${maxRetries + 1}, retrying in ${Math.round(delay)}ms...`
-    );
-    await new Promise((r) => setTimeout(r, delay));
-  }
-  throw new Error("Max retries exceeded");
-};
 const KEY_FILE_PATH = (() => {
   const env = process.env.GOOGLE_APPLICATION_CREDENTIALS;
   if (env) return path.isAbsolute(env) ? env : path.join(process.cwd(), env);
@@ -239,6 +207,44 @@ function extractTextFromGeminiResponse(data: unknown): string {
     .join("\n");
 }
 
+async function retryWithBackoff<T>(
+  fn: () => Promise<T>,
+  opts: {
+    maxAttempts?: number;
+    baseDelayMs?: number;
+    maxDelayMs?: number;
+    label?: string;
+  } = {}
+): Promise<T> {
+  const maxAttempts = opts.maxAttempts ?? 4;
+  const baseDelayMs = opts.baseDelayMs ?? 2000;
+  const maxDelayMs = opts.maxDelayMs ?? 30_000;
+  const label = opts.label ?? "vertex";
+
+  let lastErr: unknown;
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    try {
+      return await fn();
+    } catch (err: unknown) {
+      lastErr = err;
+      const status =
+        err instanceof VertexHttpError ? err.status : 0;
+      const isRetryable = status === 429 || status === 503;
+      if (!isRetryable || attempt === maxAttempts) throw err;
+      const jitter = Math.random() * 1000;
+      const delay = Math.min(
+        baseDelayMs * Math.pow(2, attempt - 1) + jitter,
+        maxDelayMs
+      );
+      console.warn(
+        `[${label}] HTTP ${status} — retry ${attempt}/${maxAttempts - 1} in ${Math.round(delay)}ms`
+      );
+      await new Promise((r) => setTimeout(r, delay));
+    }
+  }
+  throw lastErr;
+}
+
 /** Vertex Gemini service for image reasoning and provisional OCR. Alias preserved for compatibility. */
 export class VertexImageService {
   private auth: GoogleAuth;
@@ -291,31 +297,40 @@ export class VertexImageService {
 
     await acquireVertexPermit();
     try {
-      const response = await retryWithBackoff(() =>
-        fetch(endpoint, {
-          method: 'POST',
-          headers: {
-            'Authorization': `Bearer ${token}`,
-            'Content-Type': 'application/json',
-          },
-          body: JSON.stringify(body),
-          signal,
-        })
+      const response = await retryWithBackoff(
+        async () => {
+          const r = await fetch(endpoint, {
+            method: "POST",
+            headers: {
+              Authorization: `Bearer ${token}`,
+              "Content-Type": "application/json",
+            },
+            body: JSON.stringify(body),
+            signal,
+          });
+          if (r.status === 403) {
+            console.error(
+              `[VertexImage] IAM 403 on model ${activeModel}`
+            );
+            throw new VertexHttpError(403, r.statusText);
+          }
+          if (!r.ok) {
+            const errText = await r.text().catch(() => "");
+            console.error(
+              `[VertexImage] HTTP ${r.status} model=${activeModel}:`,
+              errText?.slice(0, 300)
+            );
+            if (r.status === 404) {
+              console.error(
+                `[VertexImage] Model 404 — "${activeModel}" not found. Use VERTEX_MODEL env to override. Valid models: gemini-2.5-flash, gemini-2.5-pro`
+              );
+            }
+            throw new VertexHttpError(r.status, r.statusText, errText);
+          }
+          return r;
+        },
+        { maxAttempts: 4, baseDelayMs: 2000, label: "callGemini" }
       );
-
-      if (response.status === 403) {
-        console.error(`[VertexImage] IAM 403 on model ${activeModel}`);
-        throw new VertexHttpError(403, response.statusText);
-      }
-
-      if (!response.ok) {
-        const errText = await response.text().catch(() => "");
-        console.error(`[VertexImage] HTTP ${response.status} on model=${activeModel}, endpoint=${endpoint}:`, errText?.slice(0, 400));
-        if (response.status === 404) {
-          console.error(`[VertexImage] Model 404 — "${activeModel}" not found. Use VERTEX_MODEL env to override. Valid models: gemini-2.5-flash, gemini-2.5-pro`);
-        }
-        throw new VertexHttpError(response.status, response.statusText, errText);
-      }
 
       const data = await response.json();
       return extractTextFromGeminiResponse(data);
@@ -348,22 +363,25 @@ export class VertexImageService {
 
     await acquireVertexPermit();
     try {
-      const response = await retryWithBackoff(() =>
-        fetch(endpoint, {
-          method: "POST",
-          headers: {
-            Authorization: `Bearer ${token}`,
-            "Content-Type": "application/json",
-          },
-          body: JSON.stringify(body),
-          signal,
-        })
+      const response = await retryWithBackoff(
+        async () => {
+          const r = await fetch(endpoint, {
+            method: "POST",
+            headers: {
+              Authorization: `Bearer ${token}`,
+              "Content-Type": "application/json",
+            },
+            body: JSON.stringify(body),
+            signal,
+          });
+          if (!r.ok) {
+            const errText = await r.text().catch(() => "");
+            throw new VertexHttpError(r.status, r.statusText, errText);
+          }
+          return r;
+        },
+        { maxAttempts: 4, baseDelayMs: 3000, label: "callGeminiText" }
       );
-
-      if (!response.ok) {
-        const errText = await response.text().catch(() => "");
-        throw new VertexHttpError(response.status, response.statusText, errText);
-      }
 
       const data = await response.json();
       return extractTextFromGeminiResponse(data);
