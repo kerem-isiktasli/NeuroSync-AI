@@ -37,7 +37,7 @@ export async function GET(request: Request) {
       vertexFallbackModel: process.env.VERTEX_FALLBACK_MODEL || "gemini-2.5-flash",
       anthropicModel: process.env.ANTHROPIC_MODEL || "claude-sonnet-4-6",
       ocrEnabled: true,
-      literatureEnabled: true,
+      literatureEnabled: false,
       fusionEnabled: true,
       maxImages: 50,
       classificationConfidenceThreshold: 40,

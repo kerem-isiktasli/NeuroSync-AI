@@ -35,6 +35,16 @@ export function getAnatomicallyBalancedSliceIndices(
 }
 
 /**
+ * When triage flags nothing, sample this many slices with anatomical spacing (two-stage fallback).
+ */
+export function balancedDeepIndicesWhenTriageClear(
+  totalSlices: number,
+  minSlices: number
+): number[] {
+  return getAnatomicallyBalancedSliceIndices(totalSlices, minSlices);
+}
+
+/**
  * Extract slice pixels from volume and apply window/level.
  */
 function windowLevel(

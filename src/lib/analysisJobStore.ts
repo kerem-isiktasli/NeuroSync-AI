@@ -106,13 +106,30 @@ export async function createJobWithPayload(
 }
 
 export async function getJob(id: string): Promise<AnalysisJob | undefined> {
+  const skipCache = process.env.SKIP_ANALYSIS_CACHE === "true";
   const db = await getFirestoreDb();
   if (db) {
     const snap = await db.collection(COLLECTION).doc(id).get();
     if (!snap.exists) return undefined;
-    return jobFromFirestoreData(id, snap.data()!);
+    const data = snap.data()!;
+    if (
+      skipCache &&
+      data.status === "completed" &&
+      data.result != null
+    ) {
+      console.log(`[cache] BYPASSED key=${COLLECTION}/${id} (completed job read logged; result still returned)`);
+    }
+    return jobFromFirestoreData(id, data);
   }
-  return memoryJobs.get(id);
+  const mem = memoryJobs.get(id);
+  if (
+    skipCache &&
+    mem?.status === "completed" &&
+    mem.result != null
+  ) {
+    console.log(`[cache] BYPASSED key=memory/${id} (completed job read logged; result still returned)`);
+  }
+  return mem;
 }
 
 export async function updateJob(

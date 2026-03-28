@@ -1,4 +1,4 @@
-import type { DomainRoute } from "./classificationPrompts";
+import type { ClassificationResult, DomainRoute } from "./classificationPrompts";
 
 export interface ExtractionResult {
   diagnosis: string;
@@ -145,7 +145,8 @@ SİSTEMATİK İNCELEME PROTOKOLÜ:
 5. HİLER YAPILAR: Hiler genişleme, lenfadenopati, vasküler patoloji.
 6. KEMİK YAPILAR: Kosta kırıkları, vertebra lezyonları, sternum.
 7. DİYAFRAGMA: Pozisyon, elevasyon, herniasyon.
-8. YUMUŞAK DOKU: Subkutan amfizem, aksiller lenfadenopati.`;
+8. YUMUŞAK DOKU: Subkutan amfizem, aksiller lenfadenopati.
+9. DÜZ GRAFİ / TORAKS RÖNTGENİ (modalite X-ray veya benzeri düz projeksiyon ise): İlham derinliği ve rotasyon. Sağ/sol hiler simetri veya asimetri, hiler yoğunluk artışı. Retrokardiyak/sol alt lob opasitesi (ön görünümde gizlenebilir). Hiperinflasyon/amfizem ipuçları: düzleşmiş diyafragmalar, artmış retrosternal hava (lateralde), bronş duvar kalınlaşması. Lateral grafide torasik kifoz/gövde hizası (gross) — ölçü uydurma.`;
 
 const CHEST_EN = `You are a specialist Thoracic Radiologist. You are presented with a CHEST image.
 
@@ -157,7 +158,8 @@ SYSTEMATIC REVIEW PROTOCOL:
 5. HILAR STRUCTURES: Hilar enlargement, lymphadenopathy, vascular pathology.
 6. BONY STRUCTURES: Rib fractures, vertebral lesions, sternum.
 7. DIAPHRAGM: Position, elevation, herniation.
-8. SOFT TISSUE: Subcutaneous emphysema, axillary lymphadenopathy.`;
+8. SOFT TISSUE: Subcutaneous emphysema, axillary lymphadenopathy.
+9. PLAIN CHEST RADIOGRAPH (when modality is X-ray or similar projection): Inspiration depth and rotation. Right vs left hilum — symmetry, increased density or mass-like opacity (including left hilar / perihilar / retrocardiac / left lower zone, which can be subtle on frontal views). Hyperinflation / emphysema cues: flattened hemidiaphragms, increased retrosternal air space on lateral, bronchial wall thickening. On lateral films, note gross thoracic kyphosis or sagittal alignment when visible — do not invent numeric Cobb angles.`;
 
 // ─── ABDOMEN IMAGING ────────────────────────────────────
 
@@ -271,6 +273,121 @@ CAUTION:
 - Your interpretation must be very careful and cautious.
 - Clearly highlight all uncertainties.`;
 
+// ─── CHEST: modality/projection-specific augmentation (Vertex extraction) ─
+
+const CHEST_PLAIN_AP_AUG_EN = `ADDITIONAL PLAIN FILM (PA/AP/FRONTAL CHEST) CHECKLIST — REQUIRED:
+Evaluate this single frontal chest radiograph IN ORDER:
+1. TRACHEA: midline or deviated?
+2. BONES: ribs, clavicles, thoracic spine alignment
+3. CARDIAC SILHOUETTE: size and borders (cardiothoracic ratio >0.5 suggests enlargement)
+4. LEFT HILUM: size, density, shape — you MUST state explicitly either "Left hilum is normal" OR describe abnormality (enlarged, dense, lobulated, etc.).
+5. RIGHT HILUM: symmetry vs left; prominence or enlargement?
+6. MEDIASTINUM: width and contour
+7. RIGHT LUNG: upper/mid/lower zones — opacities, nodules, consolidation, bronchial thickening
+8. LEFT LUNG: upper/mid/lower zones — same; pay special attention to left lower zone and perihilar region
+9. DIAPHRAGMS: height and contour — flattened hemidiaphragms suggest hyperinflation; state this when present
+10. PLEURA: costophrenic angles, effusion, pneumothorax
+11. EMPHYSEMA / HYPERINFLATION (answer each yes/no in findings or reasoning): flattened diaphragms; increased lung lucency; barrel chest appearance; hyperlucent fields; bronchial wall thickening. If two or more are yes and visible, report "findings consistent with emphysema/hyperinflation" when supported by the image.
+For each major finding note location, severity (critical/moderate/mild/normal), and confidence 0.0–1.0 in your structured output.`;
+
+const CHEST_PLAIN_AP_AUG_TR = `EK DÜZ GRAFİ (PA/AP/ÖN GÖĞÜS) KONTROL LİSTESİ — ZORUNLU:
+Bu tek ön göğüs grafisini ŞU SIRAYLA değerlendir:
+1. TRAKEA: orta hatta mı, sapma var mı?
+2. KEMİK: kaburgalar, köprücük kemikleri, torakal omurga hizası
+3. KARDİAK SİLÜET: boyut ve sınırlar (KTI >0.5 kardiyomegali düşündürür)
+4. SOL HİLUS: boyut, dansite, şekil — AÇIKÇA "Sol hilus normaldir" VEYA anormallığı yaz (büyümüş, yoğun, lobüle, vb.) — ATLAMA.
+5. SAĞ HİLUS: sol ile simetri; belirginleşme?
+6. MEDİASTEN: genişlik ve kontur
+7. SAĞ AKCİĞER: üst/orta/alt zonlar — opasite, nodül, konsolidasyon, bronş duvar kalınlığı
+8. SOL AKCİĞER: aynı; sol alt zon ve perihilüler bölgeye ekstra dikkat
+9. DİYAFRAGMALAR: yükseklik — düzleşme hiperinflasyon/amfizem ipucu; görüyorsan belirt
+10. PLEVRA: kostofrenik açılar, efüzyon, pnömotoraks
+11. AMPİZEM/HİPERİNFLASYON: düzleşmiş diyafram, artmış akciger transparanlığı, varil göğüs görünümü, bronş duvar kalınlığı — en az ikisi uyuyorsa ve görüntü destekliyorsa "amfizem/hiperinflasyon ile uyumlu bulgular" ifadesini kullan.
+Her önemli bulgu için lokalizasyon, şiddet ve güven 0.0–1.0 belirt.`;
+
+const CHEST_PLAIN_LAT_AUG_EN = `ADDITIONAL LATERAL CHEST RADIOGRAPH CHECKLIST — REQUIRED:
+1. THORACIC SPINE: alignment, kyphosis (gross only, no fabricated Cobb angles), vertebral heights, endplates
+2. STERNUM: shape, fractures
+3. RETROSTERNAL CLEAR SPACE: clear or opacified?
+4. RETROCARDIAC SPACE: clear or opacified? (lower lobe pathology often only visible here)
+5. CARDIAC: retrosternal contact extent
+6. TRACHEA: position and caliber
+7. DIAPHRAGMS: both domes visible? flattened vs domed?
+8. POSTERIOR COSTOPHRENIC ANGLES: sharp vs blunted (effusion)
+For each major finding: location, severity, confidence 0.0–1.0.`;
+
+const CHEST_PLAIN_LAT_AUG_TR = `EK LATERAL GÖĞÜS GRAFİSİ KONTROL LİSTESİ — ZORUNLU:
+1. Torakal omurga hizası ve gross kifoz (sayısal Cobb uydurma)
+2. Sternum
+3. Retrosternal mesafe
+4. Retrokardiyak mesafe (alt lob patolojileri)
+5. Kalp/diyafram ilişkisi
+6. Trakea
+7. Her iki diyafram kubbesi; düzleşme var mı?
+8. Posterior kostofrenik açılar
+Önemli bulgular için lokalizasyon, şiddet, güven 0.0–1.0.`;
+
+const CHEST_CT_AUG_EN = `ADDITIONAL CHEST CT CHECKLIST:
+LUNG: ground-glass, consolidation, nodules (size, lobe, margins), emphysema pattern, bronchial wall thickening, bronchiectasis
+MEDIASTINUM: nodes (short axis >10mm = enlarged), masses, vessels
+PLEURA: effusion, pneumothorax
+BONES: lytic/sclerotic lesions, compression
+For each: location, size where applicable, severity, confidence 0.0–1.0.`;
+
+const CHEST_CT_AUG_TR = `EK GÖĞÜS BT KONTROL LİSTESİ:
+Akciğer parankimi, mediasten, plevra, kemik yapılar — nodül boyutu, lenf nodu kısa aksı >10 mm, efüzyon, amfizem paterni, bronş duvar kalınlığı.
+Her bulgu için lokalizasyon, şiddet, güven 0.0–1.0.`;
+
+type ClassHint = Pick<
+  ClassificationResult,
+  "modality" | "anatomical_region" | "image_plane" | "series_type_guess"
+> | null;
+
+function buildChestModalityAugmentation(
+  route: DomainRoute,
+  language: "tr" | "en",
+  classification: ClassHint
+): string {
+  if (route !== "chest-imaging" && route !== "unknown") return "";
+
+  const mod = (classification?.modality ?? "").toLowerCase();
+  const region = (classification?.anatomical_region ?? "").toLowerCase();
+  const series = (classification?.series_type_guess ?? "").toLowerCase();
+  const plane = (classification?.image_plane ?? "unknown").toLowerCase();
+  const blob = `${mod} ${region} ${series} ${plane}`;
+
+  const looksChest =
+    /chest|thorax|thoracic|lung|pulmon|cardiac|heart|mediastin|hilum|rib|pleura/i.test(
+      `${mod} ${region} ${series}`
+    );
+  if (route === "unknown" && !looksChest) return "";
+
+  if (/\bmri\b|mr\s|manyetik|magnetic resonance/i.test(blob)) return "";
+
+  const isCt =
+    /\bct\b|computed tomography|cat scan|toraks bt|göğüs bt/i.test(blob);
+  if (isCt) {
+    return language === "tr" ? CHEST_CT_AUG_TR : CHEST_CT_AUG_EN;
+  }
+
+  const plainSignals =
+    /x-ray|xray|radiograph|roentgen|röntgen|plain|konvansiyonel|graf|cxr|chest film/i.test(
+      blob
+    );
+  const likelyPlain = route === "chest-imaging" || plainSignals || looksChest;
+
+  if (!likelyPlain) return "";
+
+  const lateral =
+    plane === "sagittal" ||
+    /\blateral\b|\blat\b|yan\s+graf|side\s+view/i.test(blob);
+
+  if (lateral) {
+    return language === "tr" ? CHEST_PLAIN_LAT_AUG_TR : CHEST_PLAIN_LAT_AUG_EN;
+  }
+  return language === "tr" ? CHEST_PLAIN_AP_AUG_TR : CHEST_PLAIN_AP_AUG_EN;
+}
+
 // ─── REGISTRY ───────────────────────────────────────────
 
 const PROMPT_MAP: Record<DomainRoute, { tr: string; en: string }> = {
@@ -283,8 +400,17 @@ const PROMPT_MAP: Record<DomainRoute, { tr: string; en: string }> = {
   "unknown": { tr: UNKNOWN_TR, en: UNKNOWN_EN },
 };
 
-export function getDomainPrompt(route: DomainRoute, language: "tr" | "en"): string {
+export function getDomainPrompt(
+  route: DomainRoute,
+  language: "tr" | "en",
+  classification?: Pick<
+    ClassificationResult,
+    "modality" | "anatomical_region" | "image_plane" | "series_type_guess"
+  > | null
+): string {
   const entry = PROMPT_MAP[route] ?? PROMPT_MAP["unknown"];
   const base = language === "tr" ? entry.tr : entry.en;
-  return `${base}\n\n${safetyBlock(language)}\n\n${schemaBlock(language)}`;
+  const aug = buildChestModalityAugmentation(route, language, classification ?? null);
+  const augBlock = aug ? `${aug}\n\n` : "";
+  return `${base}\n\n${augBlock}${safetyBlock(language)}\n\n${schemaBlock(language)}`;
 }

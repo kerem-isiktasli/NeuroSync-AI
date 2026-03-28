@@ -11,7 +11,10 @@ import {
   type RadiologyReport,
 } from "@/lib/dicom";
 import { mapAnatomyUniversal } from "@/lib/dicom/anatomyMapperUniversal";
-import { runStudyImageAnalysis, toPathologyObservations } from "@/lib/dicom/studyImageAnalyzer";
+import {
+  runStudyImageAnalysis,
+  toPathologyObservations,
+} from "@/lib/dicom/studyImageAnalyzer";
 import { googleHealthcare } from "@/lib/googleHealthcare";
 import { routeToDomain } from "@/lib/medical/domainRouter";
 
@@ -23,6 +26,13 @@ const MAX_DICOM_SLICES_INGEST = parseInt(
     "300",
   10
 );
+
+function parseSliceSuccessRateMin(): number {
+  const v = process.env.DICOM_MIN_SLICE_SUCCESS_RATE;
+  if (v === undefined || v === "") return 0.6;
+  const n = Number.parseFloat(v);
+  return Number.isFinite(n) ? Math.max(0, Math.min(1, n)) : 0.6;
+}
 
 export interface DicomFinalResponse {
   reportMode?: "METADATA_ONLY_REPORT" | "LIMITED_METADATA_REPORT" | "LIMITED_IMAGE_ANALYSIS_REPORT" | "FULL_INTERPRETATION_REPORT";
@@ -97,7 +107,13 @@ function toFinalResponse(
   fileNames: string[],
   sliceCount: number,
   reportMode: "LIMITED_IMAGE_ANALYSIS_REPORT" | "FULL_INTERPRETATION_REPORT",
-  sliceStats?: { totalUploaded: number; totalUsable: number; totalAnalyzed: number }
+  sliceStats?: { totalUploaded: number; totalUsable: number; totalAnalyzed: number },
+  sliceVertexQuality?: {
+    attempted: number;
+    successful: number;
+    failedIndices: number[];
+    belowMinRate: boolean;
+  }
 ): DicomFinalResponse {
   const tr = language === "tr";
   const findingsByLevel = report.vertebraeFindings
@@ -156,16 +172,32 @@ function toFinalResponse(
         ? report.abnormalities
         : report.vertebraeFindings.map((v) => `${v.level}: ${v.finding}`),
       interpretive_impression: report.impression,
-      limitations:
-        sliceStats && sliceStats.totalAnalyzed < sliceStats.totalUsable
-          ? [
-              tr
-                ? `Temsili örnekleme: ${sliceStats.totalAnalyzed}/${sliceStats.totalUsable} kesit AI için analiz edildi; tüm seri kapsanmadı.`
-                : `Representative sampling: ${sliceStats.totalAnalyzed} of ${sliceStats.totalUsable} slices analyzed for AI; not all slices were included.`,
-            ]
-          : reportMode === "LIMITED_IMAGE_ANALYSIS_REPORT"
-            ? [tr ? "Kısmi kesit analizi; tüm seri kapsanmadı." : "Partial slice analysis; not all slices were analyzed."]
-            : [],
+      limitations: (() => {
+        const lim: string[] = [];
+        if (sliceStats && sliceStats.totalAnalyzed < sliceStats.totalUsable) {
+          lim.push(
+            tr
+              ? `Temsili örnekleme: ${sliceStats.totalAnalyzed}/${sliceStats.totalUsable} kesit AI için analiz edildi; tüm seri kapsanmadı.`
+              : `Representative sampling: ${sliceStats.totalAnalyzed} of ${sliceStats.totalUsable} slices analyzed for AI; not all slices were included.`
+          );
+        } else if (reportMode === "LIMITED_IMAGE_ANALYSIS_REPORT") {
+          lim.push(
+            tr ? "Kısmi kesit analizi; tüm seri kapsanmadı." : "Partial slice analysis; not all slices were analyzed."
+          );
+        }
+        if (
+          sliceVertexQuality &&
+          (sliceVertexQuality.failedIndices.length > 0 ||
+            sliceVertexQuality.belowMinRate)
+        ) {
+          lim.push(
+            tr
+              ? `Kesit düzeyi Vertex analizi: ${sliceVertexQuality.successful}/${sliceVertexQuality.attempted} başarılı. Başarısız indeksler: ${sliceVertexQuality.failedIndices.join(", ") || "—"}.${sliceVertexQuality.belowMinRate ? " Başarı oranı hedefin altında; bulgular sınırlı güvenle yorumlanmalıdır." : ""}`
+              : `Slice-level Vertex analysis: ${sliceVertexQuality.successful}/${sliceVertexQuality.attempted} succeeded. Failed indices: ${sliceVertexQuality.failedIndices.join(", ") || "—"}.${sliceVertexQuality.belowMinRate ? " Success rate is below the quality threshold; interpret findings with caution." : ""}`
+          );
+        }
+        return lim;
+      })(),
       next_steps: report.recommendedNextSteps,
       study_adequacy_summary: "",
       anatomical_specificity_summary: findingsByLevel,
@@ -354,6 +386,9 @@ export async function runDicomAnalysisPipeline(
       analyzedSliceCount: 0,
       totalSliceCount: totalUsable,
       sampledIndices: [],
+      successfulSliceCount: 0,
+      failedSliceIndices: [],
+      sliceSelectionStrategy: "none",
       domain: "general-radiology",
       modality: study.modality,
       anatomicalRegion: anatomyUniversal.region,
@@ -405,9 +440,28 @@ export async function runDicomAnalysisPipeline(
   const coverageRatio = analysisResult.totalSliceCount > 0
     ? analysisResult.analyzedSliceCount / analysisResult.totalSliceCount
     : 0;
+
+  const minSliceSuccessRate = parseSliceSuccessRateMin();
+  const sliceAttempted = analysisResult.sampledIndices.length;
+  const sliceSuccessful = analysisResult.successfulSliceCount;
+  const sliceSuccessRate =
+    sliceAttempted > 0 ? sliceSuccessful / sliceAttempted : 1;
+  const lowVertexSliceSuccess =
+    analysisResult.hadImageAnalysis &&
+    sliceAttempted > 0 &&
+    sliceSuccessRate < minSliceSuccessRate;
+
+  if (lowVertexSliceSuccess) {
+    logPhase(
+      `vertex-synthesis-preflight-low-slice-success ${sliceSuccessful}/${sliceAttempted} rate=${sliceSuccessRate.toFixed(2)} min=${minSliceSuccessRate}`
+    );
+  }
+
   const isLimitedAnalysis =
     analysisResult.hadImageAnalysis &&
-    (analysisResult.avgConfidence < 60 || coverageRatio < 0.5);
+    (analysisResult.avgConfidence < 60 ||
+      coverageRatio < 0.5 ||
+      lowVertexSliceSuccess);
 
   logPhase("vertex-synthesis-start");
   await sendEvent("status", {
@@ -426,14 +480,52 @@ export async function runDicomAnalysisPipeline(
         : "Generating AI study interpretation...",
   });
 
+  // If anatomy mapper returned UNKNOWN, pass the
+  // raw series description and body part tags
+  // to give the domain router the best chance
+  const rawSeriesDesc =
+    study.orderedSlices[0]?.metadata.seriesDescription ?? "";
+  const rawBodyPart =
+    study.orderedSlices[0]?.metadata.bodyPartExamined ?? "";
+
   const domainRoute = routeToDomain({
     uploadType: "dicom-study",
     modality: study.modality,
-    anatomicalRegion: anatomyUniversal.region,
+    anatomicalRegion:
+      anatomyUniversal.region !== "UNKNOWN"
+        ? anatomyUniversal.region
+        : `${rawSeriesDesc} ${rawBodyPart}`.trim(),
+    ocrContentSnippet: `${rawSeriesDesc} ${rawBodyPart}`,
     hasDicomStudy: true,
   });
 
+  const groundedSliceFindings = analysisResult.sliceFindings.map((sf) => ({
+    sliceIndex: sf.sliceIndex,
+    sliceLabel:
+      `Slice ${sf.sliceIndex + 1}` +
+      `/${analysisResult.totalSliceCount}`,
+    findings: sf.findings,
+    abnormalities: sf.abnormalities,
+    confidence: sf.confidence,
+    limitations: sf.limitations,
+  }));
+
+  const coverageSummary = {
+    totalSlices: analysisResult.totalSliceCount,
+    analyzedSlices: analysisResult.analyzedSliceCount,
+    coveragePercent: Math.round(
+      (analysisResult.analyzedSliceCount /
+        Math.max(1, analysisResult.totalSliceCount)) *
+        100
+    ),
+    notAnalyzed: Array.from(
+      { length: analysisResult.totalSliceCount },
+      (_, i) => i
+    ).filter((i) => !analysisResult.sampledIndices.includes(i)),
+  };
+
   const studyReportInputBase = {
+    domain: domainRoute.domain,
     studySummary: {
       studyType: study.modality,
       region: anatomyUniversal.region,
@@ -455,28 +547,6 @@ export async function runDicomAnalysisPipeline(
       voxelSpacing: volume.voxelSpacing,
       sliceCount: study.sliceCount,
     },
-    groundedSliceFindings: analysisResult.sliceFindings.map((sf) => ({
-      sliceIndex: sf.sliceIndex,
-      sliceLabel: `Slice ${sf.sliceIndex + 1}/${analysisResult.totalSliceCount}`,
-      findings: sf.findings,
-      abnormalities: sf.abnormalities,
-      confidence: sf.confidence,
-      limitations: sf.limitations,
-    })),
-    coverageSummary: {
-      totalSlices: analysisResult.totalSliceCount,
-      analyzedSlices: analysisResult.analyzedSliceCount,
-      sampledIndices: analysisResult.sampledIndices,
-      notAnalyzed: Array.from(
-        { length: analysisResult.totalSliceCount },
-        (_, i) => i
-      ).filter((i) => !analysisResult.sampledIndices.includes(i)),
-      coveragePercent: Math.round(
-        (analysisResult.analyzedSliceCount /
-          Math.max(1, analysisResult.totalSliceCount)) *
-          100
-      ),
-    },
     detectedAnomalies: pathologyScan.observations.map((o) => ({
       sliceIndex: o.sliceIndex,
       vertebraLevel: o.vertebraLevel,
@@ -484,6 +554,8 @@ export async function runDicomAnalysisPipeline(
       description: o.description,
       confidence: o.confidence,
     })),
+    groundedSliceFindings,
+    coverageSummary,
   };
 
   let radiologyReport: RadiologyReport;
@@ -557,7 +629,7 @@ export async function runDicomAnalysisPipeline(
     try {
       const vertexOut = await Promise.race([
         googleHealthcare.analyzeStudyUniversal(
-          { ...studyReportInputBase, domain: domainRoute.domain },
+          studyReportInputBase,
           language
         ),
         new Promise<never>((_, reject) =>
@@ -614,7 +686,15 @@ export async function runDicomAnalysisPipeline(
           names,
           study.sliceCount,
           reportMode as "LIMITED_IMAGE_ANALYSIS_REPORT" | "FULL_INTERPRETATION_REPORT",
-          sliceStats
+          sliceStats,
+          analysisResult.hadImageAnalysis
+            ? {
+                attempted: sliceAttempted,
+                successful: sliceSuccessful,
+                failedIndices: analysisResult.failedSliceIndices,
+                belowMinRate: lowVertexSliceSuccess,
+              }
+            : undefined
         );
 
   const avgConfidence =

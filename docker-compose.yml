@@ -1,0 +1,22 @@
+# Local Redis + BullMQ analysis worker. Run the Next.js app on the host:
+#   REDIS_URL=redis://127.0.0.1:6379 npm run dev
+#   npm run worker:analysis
+services:
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+
+  worker:
+    build:
+      context: .
+      dockerfile: Dockerfile.worker
+    restart: unless-stopped
+    depends_on:
+      - redis
+    environment:
+      REDIS_URL: redis://redis:6379
+    env_file:
+      - path: .env
+        required: false

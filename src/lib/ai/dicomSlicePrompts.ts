@@ -160,6 +160,22 @@ TASK: Inspect the image. Report visible anatomy, obvious abnormalities, and limi
 ${OUTPUT_SCHEMA}`;
 }
 
+export interface DicomTriageSliceContext {
+  sliceIndex: number;
+  totalSlices: number;
+  language: "tr" | "en";
+}
+
+/** Flash triage: single 0–1 suspicion score per slice. */
+export function getDicomTriageSlicePrompt(ctx: DicomTriageSliceContext): string {
+  const tr = ctx.language === "tr";
+  return tr
+    ? `Bu bir tıbbi görüntü kesitidir (${ctx.sliceIndex + 1}/${ctx.totalSlices}). Görev: Bu kesitte bariz patoloji, önemli artefakt veya belirgin anormallik olup olmadığını hızlıca tahmin et.
+Yanıt YALNIZCA JSON: {"score": 0 ile 1 arası sayı; 0=büyük ölçüde benign/sakin görünüm, 1=güçlü şüphe veya bariz anormallik}`
+    : `This is one slice (${ctx.sliceIndex + 1}/${ctx.totalSlices}) from a medical imaging study. Task: Quickly estimate whether this slice likely shows obvious pathology, major artifact, or notable abnormality.
+Return ONLY JSON: {"score": number from 0 to 1 where 0=likely benign/unremarkable, 1=high suspicion or obvious abnormality}`;
+}
+
 export function getDicomSliceAnalysisPrompt(ctx: DicomSliceAnalysisContext): string {
   switch (ctx.domain) {
     case "brain":

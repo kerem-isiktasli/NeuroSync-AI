@@ -42,7 +42,8 @@ const DEFAULTS: RuntimeConfig = {
   vertexFallbackModel: process.env.VERTEX_FALLBACK_MODEL || "gemini-2.5-flash",
   anthropicModel: process.env.ANTHROPIC_MODEL || "claude-sonnet-4-6",
   ocrEnabled: true,
-  literatureEnabled: true,
+  /** Live PubMed/literature HTTP fetch is off unless admin + RAPIMED_ALLOW_RUNTIME_LITERATURE_FETCH. */
+  literatureEnabled: false,
   fusionEnabled: true,
   maxImages: 50,
   maxImageBytes: 20 * 1024 * 1024,
@@ -81,6 +82,11 @@ const CACHE_TTL_MS = 10_000; // 10 seconds
  * Safe for missing config or invalid values.
  */
 export async function loadRuntimeConfig(): Promise<RuntimeConfig> {
+  if (process.env.SKIP_ANALYSIS_CACHE === "true") {
+    cached = null;
+    cachedAt = 0;
+    console.log("[cache] BYPASSED key=runtimeConfig (SKIP_ANALYSIS_CACHE)");
+  }
   const now = Date.now();
   if (cached && now - cachedAt < CACHE_TTL_MS) return cached;
 

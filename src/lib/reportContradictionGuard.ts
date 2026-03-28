@@ -50,17 +50,31 @@ function stripContradictoryPhrase(text: string, patterns: RegExp[]): string {
 }
 
 // Patterns for truncated sentences caused by failed variable substitution in the AI output
+// (Uses \b word boundary — not a literal backspace character.)
 const TRUNCATED_SENTENCE_PATTERNS = [
-  /on this\s*\./gi,
-  /from this\s*\./gi,
-  /on a\s*\./gi,
-  /from a\s*\./gi,
-  /without a\s*\./gi,
-  /based on a\s*[,.]?/gi,
-  /of a\s*\./gi,
-  /in this\s*\./gi,
-  /this\s+[a-z]{0,20}\s*\./gi,
-  /a single,?\s+[a-z]{0,20}\s*\./gi,
+  /\bon this\s*\./gi,
+  /\bfrom this\s*\./gi,
+  /\bon a\s*\./gi,
+  /\bfrom a\s*\./gi,
+  /\bwithout a\s*\./gi,
+  /\bof a\s*\./gi,
+  /\bin this\s*\./gi,
+  /\bthis\s+[a-z]{0,20}\s*\./gi,
+  /\ba single,?\s+[a-z]{0,20}\s*\./gi,
+];
+
+/** Multi-token broken templates e.g. "based on a . A ." from null interpolation */
+const BROKEN_TEMPLATE_PATTERNS = [
+  /This interpretation is based on a\s*\.\s*A\s*\./gi,
+  /This evaluation is based on a\s*\.\s*A\s*\./gi,
+  /interpretation is based on a\s*\.\s*A\s*\./gi,
+  /evaluation is based on a\s*\.\s*A\s*\./gi,
+  /based on a\s*\.\s*A\s*\./gi,
+  /based on an?\s+\.\s*/gi,
+  /\bA\s*\.\s*A\s*\./gi,
+  /\bbased\s+A\s*\./gi,
+  /\bbased\s+on\s+A\s*\./gi,
+  /\bThis interpretation is based\s+A\s*\./gi,
 ];
 
 // Patterns for known scanner artifact hallucinations
@@ -70,6 +84,17 @@ const ARTIFACT_HALLUCINATION_PATTERNS = [
   /posterior\s+scalp[^.]*lipoma[^.]*/gi,
   /incidental\s+lipoma\s+or\s+cyst[^.]*/gi,
 ];
+
+/** Fix incomplete model phrases: "This interpretation is single…" / bare "This interpretation is." */
+function repairInterpretationScopeEnglish(out: string): string {
+  return out
+    .replace(/\bThis interpretation is\s+single\b/gi, "This interpretation is based on a single")
+    .replace(/\bThis interpretation is\s+lateral\b/gi, "This interpretation is based on a lateral")
+    .replace(/\bThis interpretation is\s+an\s+(?!based\b)/gi, "This interpretation is based on an ")
+    .replace(/\bThis interpretation is\s+a\s+(?!based\b)(?=single|double|frontal|posterior|chest|thoracic|normal|abnormal|lateral|pa\b|ap\b)/gi, "This interpretation is based on a ")
+    .replace(/\bThis interpretation is\s*\.\s*/gi, "This interpretation is based on the provided imaging study. ")
+    .replace(/\bThis interpretation is\s*$/gim, "This interpretation is based on the provided imaging study.");
+}
 
 function applyGuardsToText(text: string | undefined, ctx: GuardContext): string {
   if (!text || typeof text !== "string") return text ?? "";
@@ -88,10 +113,14 @@ function applyGuardsToText(text: string | undefined, ctx: GuardContext): string 
   for (const p of TRUNCATED_SENTENCE_PATTERNS) {
     out = out.replace(p, "").replace(/\s{2,}/g, " ").trim();
   }
+  for (const p of BROKEN_TEMPLATE_PATTERNS) {
+    out = out.replace(p, "").replace(/\s{2,}/g, " ").trim();
+  }
   // Remove known scanner artifact hallucinations
   for (const p of ARTIFACT_HALLUCINATION_PATTERNS) {
     out = out.replace(p, "").replace(/\s{2,}/g, " ").trim();
   }
+  out = repairInterpretationScopeEnglish(out);
   return out;
 }
 

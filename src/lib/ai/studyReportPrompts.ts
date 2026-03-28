@@ -33,6 +33,8 @@ export interface StudyReportVertexInput {
   studySummary: StudySummaryInput;
   sliceStatistics: SliceStatistics;
   detectedAnomalies: DetectedAnomaly[];
+  /** Localized note when many per-slice Vertex calls failed (quota/timeouts). */
+  synthesisCompletenessNote?: string;
 }
 
 const OUTPUT_SCHEMA = `
@@ -51,7 +53,7 @@ export function buildStudyReportPrompt(
   input: StudyReportVertexInput,
   language: "tr" | "en"
 ): string {
-  const { studySummary, sliceStatistics, detectedAnomalies } = input;
+  const { studySummary, sliceStatistics, detectedAnomalies, synthesisCompletenessNote } = input;
   const tr = language === "tr";
 
   const studyBlock = JSON.stringify(studySummary, null, 2);
@@ -103,7 +105,7 @@ ${statsBlock}
 
 ## ${tr ? "Tespit Edilen Anormallikler" : "Detected Anomalies"}
 ${anomaliesBlock}
-
+${synthesisCompletenessNote ? `\n## ${tr ? "Analiz tamlığı" : "Analysis completeness"}\n${synthesisCompletenessNote}\n` : ""}
 ## ${tr ? "Çıktı Formatı" : "Output Format"}
 ${OUTPUT_SCHEMA}`;
 }

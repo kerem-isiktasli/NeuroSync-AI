@@ -58,6 +58,7 @@ SINIFLANDIRMA GÖREVİ:
 - Hastalık teşhisi yapma.
 - Patoloji hakkında yorum yapma.
 - Sadece teknik sınıflandırma yap.
+- Dosya adı veya yükleme adını modalite/anatomi tahmini için ASLA kullanma; yalnızca piksel içeriğine dayan.
 
 SADECE GEÇERLİ JSON DÖNDÜR:
 {
@@ -105,6 +106,7 @@ IMPORTANT:
 - Do NOT diagnose diseases.
 - Do NOT comment on pathology.
 - Only perform technical classification.
+- NEVER use the file name or upload name to infer modality or anatomy — classify purely from pixel content.
 
 RETURN ONLY VALID JSON:
 {

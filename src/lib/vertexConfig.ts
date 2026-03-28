@@ -39,3 +39,11 @@ export function getVertexEndpoint(model: string): string {
   const { projectId, location } = VERTEX_CONFIG;
   return `https://${location}-aiplatform.googleapis.com/v1/projects/${projectId}/locations/${location}/publishers/google/models/${model}:generateContent`;
 }
+
+/**
+ * Max parallel Vertex calls this process should schedule (align with googleHealthcare permit pool).
+ */
+export function getVertexGlobalConcurrencyCap(): number {
+  const n = parseInt(process.env.VERTEX_GLOBAL_CONCURRENCY ?? "2", 10);
+  return Math.max(1, Math.min(16, Number.isFinite(n) ? n : 2));
+}

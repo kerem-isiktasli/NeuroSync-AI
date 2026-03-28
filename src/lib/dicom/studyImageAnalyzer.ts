@@ -5,10 +5,14 @@
 import type { VolumeOutput } from "./volumeBuilder";
 import type { OrderedSlice } from "./studyAssembler";
 import type { VertebraIndexMap } from "./vertebraIndexing";
-import { renderSliceToPng, getAnatomicallyBalancedSliceIndices } from "./sliceRenderer";
+import { renderSliceToPng } from "./sliceRenderer";
 import { googleHealthcare } from "@/lib/googleHealthcare";
 import { routeToDomain } from "@/lib/medical/domainRouter";
 import type { MedicalDomain } from "@/lib/medical/domainRouter";
+import {
+  getSelectionTarget,
+  selectVarianceStratifiedSliceIndices,
+} from "@/services/dicom-slice-selector";
 
 /** Max simultaneous Vertex slice calls. Keep at 3 to stay under Vertex RPM quota. */
 const SLICE_CONCURRENCY = 3;
@@ -31,13 +35,6 @@ async function withConcurrency<T>(
   await Promise.all(workers);
 }
 
-/** For small studies (≤ this count), analyze ALL slices. For larger, sample. */
-const SMALL_STUDY_THRESHOLD = 20;
-const MAX_SLICES_TO_ANALYZE = parseInt(
-  process.env.MAX_DICOM_SLICES_ANALYZED || "16",
-  10
-);
-
 export interface SliceFinding {
   sliceIndex: number;
   vertebraLevel?: string;
@@ -48,6 +45,18 @@ export interface SliceFinding {
   sliceDescription: string;
 }
 
+export interface DicomTwoStageStats {
+  triagedSlices: number;
+  triageCalls: number;
+  deepCalls: number;
+  deepBudget: number;
+  deepQueueTruncated: boolean;
+  truncatedDropCount: number;
+  zeroFlagBalancedFallback: boolean;
+  triageDurationMs: number;
+  deepDurationMs: number;
+}
+
 export interface StudyImageAnalysisResult {
   sliceFindings: SliceFinding[];
   aggregatedFindings: string[];
@@ -55,11 +64,26 @@ export interface StudyImageAnalysisResult {
   analyzedSliceCount: number;
   totalSliceCount: number;
   sampledIndices: number[];
+  /** Slices where Vertex returned usable output (vs timeout/API failure rows). */
+  successfulSliceCount: number;
+  failedSliceIndices: number[];
+  sliceSelectionStrategy: string;
   domain: MedicalDomain;
   modality: string;
   anatomicalRegion: string;
   avgConfidence: number;
   hadImageAnalysis: boolean;
+  dicomTwoStageStats?: DicomTwoStageStats;
+}
+
+/** False when the row is a placeholder after timeout or Vertex failure. */
+export function isSliceVertexAnalysisSuccessful(sf: SliceFinding): boolean {
+  const lim = sf.limitations.join(" ").toLowerCase();
+  return !(
+    /analysis failed|deep analysis failed|vertex queue exhausted|request timeout|timed out/i.test(
+      lim
+    )
+  );
 }
 
 /**
@@ -84,6 +108,7 @@ export function toPathologyObservations(
   }> = [];
 
   for (const sf of sliceFindings) {
+    if (!isSliceVertexAnalysisSuccessful(sf)) continue;
     const level = Object.entries(vertebraIndexMap).find(
       ([, idx]) => idx === sf.sliceIndex
     )?.[0];
@@ -129,12 +154,17 @@ export async function runStudyImageAnalysis(params: {
   } = params;
 
   const totalSlices = orderedSlices.length;
-  // For small readable studies: analyze ALL slices, no sampling
-  const effectiveMax = totalSlices <= SMALL_STUDY_THRESHOLD ? totalSlices : MAX_SLICES_TO_ANALYZE;
-  const sampledIndices = getAnatomicallyBalancedSliceIndices(
-    totalSlices,
-    effectiveMax
-  );
+  const target = getSelectionTarget(totalSlices);
+  let sampledIndices: number[];
+  let sliceSelectionStrategy: string;
+  if (totalSlices <= target) {
+    sampledIndices = Array.from({ length: totalSlices }, (_, i) => i);
+    sliceSelectionStrategy = "all";
+  } else {
+    const sel = selectVarianceStratifiedSliceIndices(volume, totalSlices, target);
+    sampledIndices = sel.indices;
+    sliceSelectionStrategy = sel.strategy;
+  }
   const isSampled = sampledIndices.length < totalSlices;
 
   const domainRoute = routeToDomain({
@@ -153,9 +183,10 @@ export async function runStudyImageAnalysis(params: {
     totalSlices,
     analyzingCount: sampledIndices.length,
     sampled: isSampled,
+    strategy: sliceSelectionStrategy,
     message: isSampled
-      ? `Representative sampling: analyzing ${sampledIndices.length} of ${totalSlices} slices.`
-      : `Analyzing all ${totalSlices} slices (small study, no sampling).`,
+      ? `Sampling (${sliceSelectionStrategy}): analyzing ${sampledIndices.length} of ${totalSlices} slices.`
+      : `Analyzing all ${totalSlices} slices (${sliceSelectionStrategy}).`,
   });
 
   const sharedToken = await googleHealthcare.getAccessToken();
@@ -256,6 +287,12 @@ export async function runStudyImageAnalysis(params: {
       ? confidences.reduce((a, b) => a + b, 0) / confidences.length
       : 0;
 
+  const successfulSliceCount = sliceFindings.filter(isSliceVertexAnalysisSuccessful).length;
+  const failedSliceIndices = sliceFindings
+    .filter((sf) => !isSliceVertexAnalysisSuccessful(sf))
+    .map((sf) => sf.sliceIndex)
+    .sort((a, b) => a - b);
+
   return {
     sliceFindings,
     aggregatedFindings,
@@ -263,6 +300,9 @@ export async function runStudyImageAnalysis(params: {
     analyzedSliceCount: sliceFindings.length,
     totalSliceCount: totalSlices,
     sampledIndices,
+    successfulSliceCount,
+    failedSliceIndices,
+    sliceSelectionStrategy,
     domain,
     modality,
     anatomicalRegion,

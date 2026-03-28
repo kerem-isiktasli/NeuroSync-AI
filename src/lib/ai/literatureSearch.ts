@@ -1,15 +1,24 @@
 /**
- * Targeted literature retrieval via PubMed E-utilities.
+ * Legacy optional PubMed E-utilities fetch (not Google Scholar).
  *
- * POLICY: Literature search is OFF by default.
- * It is enabled only when ALL conditions are met:
- *   1. concern_level is "high" or "urgent-review"
- *   2. confidence < 60 OR concern is urgent-review
- *   3. domain_route is in the supported subset
- *   4. a route-aware query can be constructed
+ * PRODUCT POLICY — Runtime vs offline:
+ * - Do NOT use live external research (including this module) to diagnose patients or
+ *   substitute for staged pipeline + deterministic registries.
+ * - External research belongs in build-time assets: ontology tables, modality registry,
+ *   anatomy hierarchy, procedure capability rules, reporting templates, label normalization.
  *
+ * This fetch is DISABLED unless BOTH:
+ *   - Admin runtime flag literatureEnabled is true, AND
+ *   - process.env.RAPIMED_ALLOW_RUNTIME_LITERATURE_FETCH === "true"
+ *
+ * When enabled, additional gates still apply (high concern, route, query build).
  * Supported routes: spine-mri, brain-imaging, chest-imaging
  */
+
+/** Explicit opt-in for any runtime HTTP literature call (default: off). */
+export function isRuntimeExternalLiteratureFetchAllowed(): boolean {
+  return process.env.RAPIMED_ALLOW_RUNTIME_LITERATURE_FETCH === "true";
+}
 
 export interface LiteratureCitation {
   title: string;
@@ -41,7 +50,13 @@ const ROUTE_MESH_TERMS: Record<string, string[]> = {
   "chest-imaging": ["Thorax[MeSH]", "Radiography, Thoracic[MeSH]"],
 };
 
-export function shouldFetchLiterature(input: LiteratureSearchInput): boolean {
+export function shouldFetchLiterature(
+  input: LiteratureSearchInput,
+  literatureEnabled: boolean
+): boolean {
+  if (!literatureEnabled) return false;
+  if (!isRuntimeExternalLiteratureFetchAllowed()) return false;
+
   const isHighRisk = input.concernLevel === "high" || input.concernLevel === "urgent-review";
   if (!isHighRisk) return false;
 

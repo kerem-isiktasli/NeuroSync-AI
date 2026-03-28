@@ -25,15 +25,88 @@ import {
   type DomainRoute,
   type ClassificationResult,
 } from './ai/promptRouter';
+import { type PerImageIntakeResult } from './ai/intakePrompts';
 import {
-  getIntakePrompt,
-  resolveUploadType,
-  type PerImageIntakeResult,
-  type IntakeDiagnosticValue,
-  type IntakeImagePlane,
-} from './ai/intakePrompts';
+  buildSingleFileIntakeClassifierPrompt,
+  buildSingleFileIntakeContext,
+  parseSingleFileIntakeClassification,
+  singleFileIntakeToPerImageResult,
+  type RunIntakeClassificationMeta,
+} from './ai/singleFileIntakeClassifier';
+import {
+  buildUploadCohesionArbiterPrompt,
+  parseUploadCohesionResult,
+  synthesizeCohesionSingleFile,
+  type UploadCohesionArbiterInput,
+  type UploadCohesionResult,
+} from './ai/uploadCohesionArbiter';
+import {
+  buildProcedureMapperPrompt,
+  parseProcedureMapperResult,
+  defaultProcedureMapperResult,
+  type ProcedureMapperInput,
+  type ProcedureMapperResult,
+} from './ai/procedureModalityAnatomyMapper';
+import {
+  buildImagingAtomicExtractorPrompt,
+  parseImagingAtomicExtractionResult,
+  defaultImagingAtomicExtractionResult,
+  dedupeImagingCandidateFindings,
+  type ImagingAtomicExtractorInput,
+  type ImagingAtomicExtractionResult,
+} from './ai/imagingAtomicExtractor';
+import {
+  buildLaboratoryReportExtractorPrompt,
+  parseLaboratoryReportExtractionResult,
+  defaultLaboratoryReportExtractionResult,
+  type LaboratoryReportExtractorInput,
+  type LaboratoryReportExtractionResult,
+} from './ai/laboratoryReportExtractor';
+import {
+  buildWaveformExtractorPrompt,
+  parseWaveformExtractionResult,
+  defaultWaveformExtractionResult,
+  type WaveformExtractorInput,
+  type WaveformExtractionResult,
+} from './ai/waveformExtractor';
+import {
+  buildEvidenceAdjudicatorPrompt,
+  parseEvidenceAdjudicationResult,
+  defaultEvidenceAdjudicationResult,
+  primaryGroupIdFromAdjudicatorInput,
+  sanitizeAdjudicationProvenanceAndDedupe,
+  EVIDENCE_ADJUDICATION_SCHEMA_FAILURE_SUMMARY,
+  EVIDENCE_ADJUDICATION_VERTEX_FAILURE_SUMMARY,
+  type EvidenceAdjudicatorInput,
+  type EvidenceAdjudicationResult,
+} from './ai/evidenceAdjudicatorMerger';
+import {
+  buildProcedureCapabilityPolicyPrompt,
+  parseProcedureCapabilityPolicyResult,
+  finalizeProcedureCapabilityPolicyResult,
+  type ProcedureCapabilityPolicyInput,
+  type ProcedureCapabilityPolicyResult,
+} from './ai/procedureCapabilityPolicy';
+import {
+  buildFinalReportRendererPrompt,
+  parseFinalReportRenderResult,
+  defaultFinalReportRenderResult,
+  type FinalReportRendererModelInput,
+  type FinalReportRenderResult,
+} from './ai/finalReportRenderer';
 import { VERTEX_CONFIG, getVertexEndpoint } from './vertexConfig';
 import { loadRuntimeConfig, type RuntimeConfig } from './runtimeConfig';
+import { RAPIMED_MAX_OUTPUT_TOKENS } from './rapiMed/stageTokenLimits';
+import {
+  validateUploadCohesionResult,
+  validateProcedureMapperResult,
+  validateImagingAtomicExtractionResult,
+  validateLaboratoryReportExtractionResult,
+  validateWaveformExtractionResult,
+  validateEvidenceAdjudicationResult,
+  validateFinalReportRenderResult,
+  validateProcedureCapabilityPolicyResult,
+} from './rapiMed/stageSchemaValidation';
 import {
   getStructuredReconciliationPrompt,
   parseStructuredReconciliation,
@@ -58,8 +131,10 @@ import {
 } from './ai/studyReportPromptsUniversal';
 import {
   getDicomSliceAnalysisPrompt,
+  getDicomTriageSlicePrompt,
   type DicomSliceAnalysisContext,
   type DicomSliceAnalysisResult,
+  type DicomTriageSliceContext,
 } from './ai/dicomSlicePrompts';
 import { getDomainAnalyzerPrompt } from './ai/domainAnalyzerPrompts';
 import type { MedicalDomain } from './medical/domainRouter';
@@ -106,6 +181,17 @@ const KEY_FILE_PATH = (() => {
 })();
 
 const INTAKE_TIMEOUT_MS = 10_000;
+const COHESION_ARBITER_TIMEOUT_MS = 25_000;
+const PROCEDURE_MODALITY_MAPPER_TIMEOUT_MS = 25_000;
+const IMAGING_ATOMIC_EXTRACTOR_TIMEOUT_MS = 80_000;
+const MAX_ATOMIC_EXTRACTOR_IMAGES = 12;
+const LAB_REPORT_EXTRACTOR_TIMEOUT_MS = 80_000;
+const MAX_LAB_REPORT_EXTRACTOR_IMAGES = 12;
+const WAVEFORM_EXTRACTOR_TIMEOUT_MS = 80_000;
+const MAX_WAVEFORM_EXTRACTOR_IMAGES = 12;
+const EVIDENCE_ADJUDICATOR_TIMEOUT_MS = 60_000;
+const PROCEDURE_CAPABILITY_POLICY_TIMEOUT_MS = 30_000;
+const FINAL_REPORT_RENDERER_TIMEOUT_MS = 90_000;
 const CLASSIFY_TIMEOUT_MS = 20_000;
 const EXTRACTION_TIMEOUT_MS = 50_000;
 const DOMAIN_ANALYZER_TIMEOUT_MS = 45_000;
@@ -271,11 +357,15 @@ export class VertexImageService {
     maxTokens: number;
   }): Promise<string> {
     const { model, prompt, imageBase64, token, signal, maxTokens } = params;
+    const skipAnalysisCache = process.env.SKIP_ANALYSIS_CACHE === "true";
     const runtimeConfig = await loadRuntimeConfig();
     const activeModel = model || resolveVertexImageModel(runtimeConfig);
     const endpoint = getVertexEndpoint(activeModel);
     if (process.env.NODE_ENV !== "production") {
       console.log(`[VertexImage] Calling model=${activeModel}, endpoint=${endpoint}`);
+    }
+    if (skipAnalysisCache) {
+      console.log("[cache] BYPASSED key=vertex/callGemini-image (fresh generation; temp>0)");
     }
 
     const body = {
@@ -288,7 +378,7 @@ export class VertexImageService {
       }],
       generationConfig: {
         maxOutputTokens: maxTokens,
-        temperature: 0.0,
+        temperature: skipAnalysisCache ? 0.12 : 0.0,
         topP: 0.8,
         topK: 40,
         responseMimeType: "application/json",
@@ -339,6 +429,80 @@ export class VertexImageService {
     }
   }
 
+  /** Multimodal: one prompt plus multiple JPEGs (same order as file_ids in prompt). */
+  private async callGeminiMultiImages(params: {
+    model?: string;
+    prompt: string;
+    images: Array<{ fileId: string; imageBase64: string }>;
+    token: string;
+    signal: AbortSignal;
+    maxTokens: number;
+  }): Promise<string> {
+    const { model, prompt, images, token, signal, maxTokens } = params;
+    const skipAnalysisCache = process.env.SKIP_ANALYSIS_CACHE === "true";
+    const runtimeConfig = await loadRuntimeConfig();
+    const activeModel = model || resolveVertexImageModel(runtimeConfig);
+    const endpoint = getVertexEndpoint(activeModel);
+
+    const orderNote =
+      images.length > 0
+        ? `\n\nAttached images in order (match to source_file_ids):\n${images
+            .map((im, i) => `${i + 1}. ${im.fileId}`)
+            .join("\n")}`
+        : "";
+
+    const parts: Array<
+      | { text: string }
+      | { inline_data: { mime_type: string; data: string } }
+    > = [{ text: `${prompt}${orderNote}` }];
+
+    for (const im of images) {
+      const raw = im.imageBase64.includes(",")
+        ? im.imageBase64.split(",")[1]
+        : im.imageBase64;
+      parts.push({ inline_data: { mime_type: "image/jpeg", data: raw } });
+    }
+
+    const body = {
+      contents: [{ role: "user", parts }],
+      generationConfig: {
+        maxOutputTokens: maxTokens,
+        temperature: skipAnalysisCache ? 0.12 : 0.0,
+        topP: 0.8,
+        topK: 40,
+        responseMimeType: "application/json",
+      },
+    };
+
+    await acquireVertexPermit();
+    try {
+      const response = await retryWithBackoff(
+        async () => {
+          const r = await fetch(endpoint, {
+            method: "POST",
+            headers: {
+              Authorization: `Bearer ${token}`,
+              "Content-Type": "application/json",
+            },
+            body: JSON.stringify(body),
+            signal,
+          });
+          if (!r.ok) {
+            const errText = await r.text().catch(() => "");
+            throw new VertexHttpError(r.status, r.statusText, errText);
+          }
+          return r;
+        },
+        { maxAttempts: 4, baseDelayMs: 2000, label: "callGeminiMultiImages" }
+      );
+
+      const data = await response.json();
+      return extractTextFromGeminiResponse(data);
+    } finally {
+      releaseVertexPermit();
+    }
+  }
+
   private async callGeminiText(params: {
     prompt: string;
     token: string;
@@ -346,15 +510,19 @@ export class VertexImageService {
     maxTokens: number;
   }): Promise<string> {
     const { prompt, token, signal, maxTokens } = params;
+    const skipAnalysisCache = process.env.SKIP_ANALYSIS_CACHE === "true";
     const runtimeConfig = await loadRuntimeConfig();
     const activeModel = resolveVertexImageModel(runtimeConfig);
     const endpoint = getVertexEndpoint(activeModel);
+    if (skipAnalysisCache) {
+      console.log("[cache] BYPASSED key=vertex/callGeminiText (fresh generation; temp>0)");
+    }
 
     const body = {
       contents: [{ role: "user", parts: [{ text: prompt }] }],
       generationConfig: {
         maxOutputTokens: maxTokens,
-        temperature: 0.0,
+        temperature: skipAnalysisCache ? 0.12 : 0.0,
         topP: 0.8,
         topK: 40,
         responseMimeType: "application/json",
@@ -391,12 +559,13 @@ export class VertexImageService {
   }
 
   /**
-   * Lightweight intake classification — determines upload type before main pipeline.
-   * Use to route: diagnostic-image vs localizer vs report-image vs non-diagnostic.
+   * Lightweight intake classification — RapiMed single-file family classifier.
+   * Maps families into legacy upload_type / diagnostic_value for routing.
    */
   async runIntakeClassification(
     imageBase64: string,
-    language: "tr" | "en"
+    language: "tr" | "en",
+    meta?: RunIntakeClassificationMeta
   ): Promise<Omit<PerImageIntakeResult, "imageIndex" | "fileName">> {
     let token: string;
     try {
@@ -417,50 +586,38 @@ export class VertexImageService {
     try {
       const runtimeConfig = await loadRuntimeConfig();
       const imageModel = resolveVertexImageModel(runtimeConfig);
-      const prompt = getIntakePrompt(language);
+      const effectiveMeta: RunIntakeClassificationMeta = meta ?? {
+        file_id: "intake-unknown",
+        original_filename: "upload.jpg",
+        mime_type: "image/jpeg",
+        upload_order_index: 0,
+      };
+      const context = buildSingleFileIntakeContext(effectiveMeta, rawBase64);
+      const prompt = buildSingleFileIntakeClassifierPrompt(language, context);
       const raw = await this.callGemini({
         model: imageModel,
         prompt,
         imageBase64: rawBase64,
         token,
         signal: controller.signal,
-        maxTokens: 350,
+        maxTokens: RAPIMED_MAX_OUTPUT_TOKENS.intake_classifier,
       });
 
       clearTimeout(timer);
 
       const parsed = extractJSONFromText(raw);
-      if (!parsed || typeof parsed !== "object") {
+      const classified = parseSingleFileIntakeClassification(parsed);
+      if (!classified) {
         return defaultIntakeResult();
       }
 
-      const obj = parsed as Record<string, unknown>;
-      const validPlanes: IntakeImagePlane[] = [
-        "sagittal",
-        "axial",
-        "coronal",
-        "oblique",
-        "unknown",
-      ];
-      const validDiagVal: IntakeDiagnosticValue[] = ["high", "medium", "low", "none"];
-
-      return {
-        upload_type: resolveUploadType(String(obj.upload_type ?? "")),
-        modality_guess: String(obj.modality_guess ?? ""),
-        anatomical_region_guess: String(obj.anatomical_region_guess ?? ""),
-        image_plane: validPlanes.includes(String(obj.image_plane ?? "") as IntakeImagePlane)
-          ? (String(obj.image_plane) as IntakeImagePlane)
-          : "unknown",
-        diagnostic_value: validDiagVal.includes(
-          String(obj.diagnostic_value ?? "") as IntakeDiagnosticValue
-        )
-          ? (String(obj.diagnostic_value) as IntakeDiagnosticValue)
-          : "low",
-        contains_ui_overlay: obj.contains_ui_overlay === true,
-        contains_report_text: obj.contains_report_text === true,
-        confidence: typeof obj.confidence === "number" ? obj.confidence : 50,
-        reasons: Array.isArray(obj.reasons) ? obj.reasons.map(String) : [],
-      };
+      const legacy = singleFileIntakeToPerImageResult(
+        classified,
+        0,
+        effectiveMeta.original_filename
+      );
+      const { imageIndex: _i, fileName: _f, ...rest } = legacy;
+      return rest;
     } catch (err: unknown) {
       clearTimeout(timer);
       const isAbort = err instanceof Error && err.name === "AbortError";
@@ -471,6 +628,612 @@ export class VertexImageService {
       }
       return defaultIntakeResult();
     }
+  }
+
+  /**
+   * Batch upload cohesion — groups files, quarantine, process_action (text-only JSON).
+   */
+  async runUploadCohesionArbitration(
+    input: UploadCohesionArbiterInput,
+    language: "tr" | "en"
+  ): Promise<UploadCohesionResult> {
+    if (input.upload_count <= 1) {
+      if (input.upload_count === 1) {
+        return synthesizeCohesionSingleFile(input);
+      }
+      return {
+        upload_batch_id: input.upload_batch_id,
+        process_action: "cancel",
+        overall_reason: "No files in batch.",
+        groups: [],
+        quarantined_files: [],
+        canceled_files: [],
+        user_clarification_needed: false,
+        clarification_questions: [],
+      };
+    }
+
+    let token: string;
+    try {
+      token = await this.getAccessToken();
+    } catch (err: unknown) {
+      if ((err as NodeJS.ErrnoException)?.code === "ENOENT") {
+        throw new VertexCredentialError(`Credential file not found at ${KEY_FILE_PATH}`);
+      }
+      throw new VertexCredentialError(
+        err instanceof Error ? err.message : "Failed to obtain access token"
+      );
+    }
+
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), COHESION_ARBITER_TIMEOUT_MS);
+
+    try {
+      const prompt = buildUploadCohesionArbiterPrompt(language, input);
+      const raw = await this.callGeminiText({
+        prompt,
+        token,
+        signal: controller.signal,
+        maxTokens: RAPIMED_MAX_OUTPUT_TOKENS.cohesion_arbiter,
+      });
+      clearTimeout(timer);
+
+      const parsed = extractJSONFromText(raw);
+      const result = parseUploadCohesionResult(parsed);
+      if (result) {
+        const v = validateUploadCohesionResult(result);
+        if (!v.ok) {
+          console.warn("[RapiMed] Cohesion schema rejection:", v.errors.join("; "));
+        } else {
+          if (!result.upload_batch_id) {
+            result.upload_batch_id = input.upload_batch_id;
+          }
+          return result;
+        }
+      }
+    } catch (err: unknown) {
+      clearTimeout(timer);
+      if (!(err instanceof Error && err.name === "AbortError")) {
+        console.warn(
+          "[VertexImage] Cohesion arbiter failed:",
+          err instanceof Error ? err.message : err
+        );
+      }
+    }
+
+    const ids = input.original_file_order;
+    return {
+      upload_batch_id: input.upload_batch_id,
+      process_action: "continue",
+      overall_reason:
+        "Cohesion arbitration unavailable or parse failed; proceeding with full batch (fail-open).",
+      groups: [
+        {
+          group_id: "g_fail_open_all",
+          group_type: "imaging_study_group",
+          included_file_ids: [...ids],
+          excluded_file_ids: [],
+          group_confidence: 0.35,
+          group_rationale: ["arbiter_fallback_all_files"],
+          patient_match_status: "unknown",
+          time_match_status: "unknown",
+          anatomy_match_status: "unknown",
+          family_match_status: "mixed_but_supported",
+          provisional_group: false,
+        },
+      ],
+      quarantined_files: [],
+      canceled_files: [],
+      user_clarification_needed: false,
+      clarification_questions: [],
+    };
+  }
+
+  /**
+   * Procedure / modality / anatomy mapping for one coherent group (text-only JSON).
+   */
+  async runProcedureModalityAnatomyMapping(
+    input: ProcedureMapperInput,
+    language: "tr" | "en"
+  ): Promise<ProcedureMapperResult> {
+    let token: string;
+    try {
+      token = await this.getAccessToken();
+    } catch (err: unknown) {
+      if ((err as NodeJS.ErrnoException)?.code === "ENOENT") {
+        throw new VertexCredentialError(`Credential file not found at ${KEY_FILE_PATH}`);
+      }
+      throw new VertexCredentialError(
+        err instanceof Error ? err.message : "Failed to obtain access token"
+      );
+    }
+
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), PROCEDURE_MODALITY_MAPPER_TIMEOUT_MS);
+
+    try {
+      const prompt = buildProcedureMapperPrompt(language, input);
+      const raw = await this.callGeminiText({
+        prompt,
+        token,
+        signal: controller.signal,
+        maxTokens: RAPIMED_MAX_OUTPUT_TOKENS.procedure_modality_mapper,
+      });
+      clearTimeout(timer);
+
+      const parsed = extractJSONFromText(raw);
+      const result = parseProcedureMapperResult(parsed, input.group_id);
+      if (result) {
+        const v = validateProcedureMapperResult(result);
+        if (!v.ok) {
+          console.warn("[RapiMed] Procedure mapper schema rejection:", v.errors.join("; "));
+        } else {
+          return result;
+        }
+      }
+    } catch (err: unknown) {
+      clearTimeout(timer);
+      if (!(err instanceof Error && err.name === "AbortError")) {
+        console.warn(
+          "[VertexImage] Procedure/modality mapper failed:",
+          err instanceof Error ? err.message : err
+        );
+      }
+    }
+
+    return defaultProcedureMapperResult(input.group_id, []);
+  }
+
+  /**
+   * Atomic imaging evidence for one coherent group (multimodal; images in file_ids order).
+   */
+  async runImagingAtomicExtraction(
+    input: ImagingAtomicExtractorInput,
+    language: "tr" | "en",
+    imagesByFileId: Array<{ file_id: string; imageBase64: string }>
+  ): Promise<ImagingAtomicExtractionResult> {
+    let token: string;
+    try {
+      token = await this.getAccessToken();
+    } catch (err: unknown) {
+      if ((err as NodeJS.ErrnoException)?.code === "ENOENT") {
+        throw new VertexCredentialError(`Credential file not found at ${KEY_FILE_PATH}`);
+      }
+      throw new VertexCredentialError(
+        err instanceof Error ? err.message : "Failed to obtain access token"
+      );
+    }
+
+    const idToB64 = new Map(
+      imagesByFileId.map((x) => [x.file_id, x.imageBase64] as const)
+    );
+    const ordered: Array<{ fileId: string; imageBase64: string }> = [];
+    for (const fid of input.file_ids) {
+      const b64 = idToB64.get(fid);
+      if (b64) ordered.push({ fileId: fid, imageBase64: b64 });
+    }
+
+    const capped = ordered.slice(0, MAX_ATOMIC_EXTRACTOR_IMAGES);
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), IMAGING_ATOMIC_EXTRACTOR_TIMEOUT_MS);
+
+    try {
+      const runtimeConfig = await loadRuntimeConfig();
+      const imageModel = resolveVertexImageModel(runtimeConfig);
+      const prompt = buildImagingAtomicExtractorPrompt(language, input);
+
+      const raw =
+        capped.length === 0
+          ? await this.callGeminiText({
+              prompt: `${prompt}\n\nNOTE: No images attached; return JSON with technical_adequacy.non_diagnostic or limited and empty candidate_findings unless metadata alone supports entries.`,
+              token,
+              signal: controller.signal,
+              maxTokens: RAPIMED_MAX_OUTPUT_TOKENS.imaging_atomic_extractor,
+            })
+          : await this.callGeminiMultiImages({
+              model: imageModel,
+              prompt,
+              images: capped,
+              token,
+              signal: controller.signal,
+              maxTokens: RAPIMED_MAX_OUTPUT_TOKENS.imaging_atomic_extractor,
+            });
+      clearTimeout(timer);
+
+      const parsed = extractJSONFromText(raw);
+      const result = parseImagingAtomicExtractionResult(parsed, input.group_id);
+      if (result) {
+        const v = validateImagingAtomicExtractionResult(result);
+        if (!v.ok) {
+          console.warn("[RapiMed] Imaging atomic schema rejection:", v.errors.join("; "));
+        } else {
+          return {
+            ...result,
+            candidate_findings: dedupeImagingCandidateFindings(result.candidate_findings),
+          };
+        }
+      }
+    } catch (err: unknown) {
+      clearTimeout(timer);
+      if (!(err instanceof Error && err.name === "AbortError")) {
+        console.warn(
+          "[VertexImage] Imaging atomic extractor failed:",
+          err instanceof Error ? err.message : err
+        );
+      }
+    }
+
+    return defaultImagingAtomicExtractionResult(
+      input.group_id,
+      "extraction_parse_failed_or_vertex_error"
+    );
+  }
+
+  /**
+   * Laboratory report atomic extraction for one coherent group (multimodal; images in file_ids order).
+   */
+  async runLaboratoryReportExtraction(
+    input: LaboratoryReportExtractorInput,
+    language: "tr" | "en",
+    imagesByFileId: Array<{ file_id: string; imageBase64: string }>
+  ): Promise<LaboratoryReportExtractionResult> {
+    let token: string;
+    try {
+      token = await this.getAccessToken();
+    } catch (err: unknown) {
+      if ((err as NodeJS.ErrnoException)?.code === "ENOENT") {
+        throw new VertexCredentialError(`Credential file not found at ${KEY_FILE_PATH}`);
+      }
+      throw new VertexCredentialError(
+        err instanceof Error ? err.message : "Failed to obtain access token"
+      );
+    }
+
+    const idToB64 = new Map(
+      imagesByFileId.map((x) => [x.file_id, x.imageBase64] as const)
+    );
+    const ordered: Array<{ fileId: string; imageBase64: string }> = [];
+    for (const fid of input.file_ids) {
+      const b64 = idToB64.get(fid);
+      if (b64) ordered.push({ fileId: fid, imageBase64: b64 });
+    }
+
+    const capped = ordered.slice(0, MAX_LAB_REPORT_EXTRACTOR_IMAGES);
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), LAB_REPORT_EXTRACTOR_TIMEOUT_MS);
+
+    try {
+      const runtimeConfig = await loadRuntimeConfig();
+      const imageModel = resolveVertexImageModel(runtimeConfig);
+      const prompt = buildLaboratoryReportExtractorPrompt(language, input);
+
+      const raw =
+        capped.length === 0
+          ? await this.callGeminiText({
+              prompt: `${prompt}\n\nNOTE: No page images attached; extract only from OCR text and metadata in INPUTS_JSON. If insufficient, return panels: [] and extraction_quality.overall "low".`,
+              token,
+              signal: controller.signal,
+              maxTokens: RAPIMED_MAX_OUTPUT_TOKENS.laboratory_report_extractor,
+            })
+          : await this.callGeminiMultiImages({
+              model: imageModel,
+              prompt,
+              images: capped,
+              token,
+              signal: controller.signal,
+              maxTokens: RAPIMED_MAX_OUTPUT_TOKENS.laboratory_report_extractor,
+            });
+      clearTimeout(timer);
+
+      const parsed = extractJSONFromText(raw);
+      const result = parseLaboratoryReportExtractionResult(parsed, input.group_id);
+      if (result) {
+        const v = validateLaboratoryReportExtractionResult(result);
+        if (!v.ok) {
+          console.warn("[RapiMed] Laboratory report schema rejection:", v.errors.join("; "));
+        } else {
+          return result;
+        }
+      }
+    } catch (err: unknown) {
+      clearTimeout(timer);
+      if (!(err instanceof Error && err.name === "AbortError")) {
+        console.warn(
+          "[VertexImage] Laboratory report extractor failed:",
+          err instanceof Error ? err.message : err
+        );
+      }
+    }
+
+    return defaultLaboratoryReportExtractionResult(
+      input.group_id,
+      "lab_extraction_parse_failed_or_vertex_error"
+    );
+  }
+
+  /**
+   * Waveform extraction for one coherent ECG/EEG/EMG group (multimodal; images in file_ids order).
+   */
+  async runWaveformExtraction(
+    input: WaveformExtractorInput,
+    language: "tr" | "en",
+    imagesByFileId: Array<{ file_id: string; imageBase64: string }>
+  ): Promise<WaveformExtractionResult> {
+    let token: string;
+    try {
+      token = await this.getAccessToken();
+    } catch (err: unknown) {
+      if ((err as NodeJS.ErrnoException)?.code === "ENOENT") {
+        throw new VertexCredentialError(`Credential file not found at ${KEY_FILE_PATH}`);
+      }
+      throw new VertexCredentialError(
+        err instanceof Error ? err.message : "Failed to obtain access token"
+      );
+    }
+
+    const idToB64 = new Map(
+      imagesByFileId.map((x) => [x.file_id, x.imageBase64] as const)
+    );
+    const ordered: Array<{ fileId: string; imageBase64: string }> = [];
+    for (const fid of input.file_ids) {
+      const b64 = idToB64.get(fid);
+      if (b64) ordered.push({ fileId: fid, imageBase64: b64 });
+    }
+
+    const capped = ordered.slice(0, MAX_WAVEFORM_EXTRACTOR_IMAGES);
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), WAVEFORM_EXTRACTOR_TIMEOUT_MS);
+
+    try {
+      const runtimeConfig = await loadRuntimeConfig();
+      const imageModel = resolveVertexImageModel(runtimeConfig);
+      const prompt = buildWaveformExtractorPrompt(language, input);
+
+      const raw =
+        capped.length === 0
+          ? await this.callGeminiText({
+              prompt: `${prompt}\n\nNOTE: No images attached; use OCR text and metadata only. If insufficient, waveform_type "unknown", signal_quality non_diagnostic, minimal structured_facts.`,
+              token,
+              signal: controller.signal,
+              maxTokens: RAPIMED_MAX_OUTPUT_TOKENS.waveform_extractor,
+            })
+          : await this.callGeminiMultiImages({
+              model: imageModel,
+              prompt,
+              images: capped,
+              token,
+              signal: controller.signal,
+              maxTokens: RAPIMED_MAX_OUTPUT_TOKENS.waveform_extractor,
+            });
+      clearTimeout(timer);
+
+      const parsed = extractJSONFromText(raw);
+      const result = parseWaveformExtractionResult(parsed, input.group_id);
+      if (result) {
+        const v = validateWaveformExtractionResult(result);
+        if (!v.ok) {
+          console.warn("[RapiMed] Waveform schema rejection:", v.errors.join("; "));
+        } else {
+          return result;
+        }
+      }
+    } catch (err: unknown) {
+      clearTimeout(timer);
+      if (!(err instanceof Error && err.name === "AbortError")) {
+        console.warn(
+          "[VertexImage] Waveform extractor failed:",
+          err instanceof Error ? err.message : err
+        );
+      }
+    }
+
+    return defaultWaveformExtractionResult(
+      input.group_id,
+      "waveform_extraction_parse_failed_or_vertex_error"
+    );
+  }
+
+  /**
+   * Evidence adjudication and merger — text-only JSON gatekeeper over pipeline candidates.
+   */
+  async runEvidenceAdjudication(
+    input: EvidenceAdjudicatorInput,
+    language: "tr" | "en"
+  ): Promise<EvidenceAdjudicationResult> {
+    let token: string;
+    try {
+      token = await this.getAccessToken();
+    } catch (err: unknown) {
+      if ((err as NodeJS.ErrnoException)?.code === "ENOENT") {
+        throw new VertexCredentialError(`Credential file not found at ${KEY_FILE_PATH}`);
+      }
+      throw new VertexCredentialError(
+        err instanceof Error ? err.message : "Failed to obtain access token"
+      );
+    }
+
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), EVIDENCE_ADJUDICATOR_TIMEOUT_MS);
+
+    try {
+      const prompt = buildEvidenceAdjudicatorPrompt(language, input);
+      const raw = await this.callGeminiText({
+        prompt,
+        token,
+        signal: controller.signal,
+        maxTokens: RAPIMED_MAX_OUTPUT_TOKENS.evidence_adjudicator,
+      });
+      clearTimeout(timer);
+
+      const parsed = extractJSONFromText(raw);
+      const parsedResult = parseEvidenceAdjudicationResult(parsed, input.upload_batch_id);
+      if (parsedResult && parsedResult.study_outputs.length > 0) {
+        if (!parsedResult.upload_batch_id) parsedResult.upload_batch_id = input.upload_batch_id;
+        let result = sanitizeAdjudicationProvenanceAndDedupe(parsedResult);
+        const v = validateEvidenceAdjudicationResult(result);
+        if (!v.ok) {
+          console.warn("[RapiMed] Evidence adjudication schema rejection:", v.errors.join("; "));
+          return defaultEvidenceAdjudicationResult(
+            input.upload_batch_id,
+            primaryGroupIdFromAdjudicatorInput(input),
+            EVIDENCE_ADJUDICATION_SCHEMA_FAILURE_SUMMARY
+          );
+        }
+        return result;
+      }
+    } catch (err: unknown) {
+      clearTimeout(timer);
+      if (!(err instanceof Error && err.name === "AbortError")) {
+        console.warn(
+          "[VertexImage] Evidence adjudicator failed:",
+          err instanceof Error ? err.message : err
+        );
+      }
+    }
+
+    return defaultEvidenceAdjudicationResult(
+      input.upload_batch_id,
+      primaryGroupIdFromAdjudicatorInput(input),
+      EVIDENCE_ADJUDICATION_VERTEX_FAILURE_SUMMARY
+    );
+  }
+
+  /**
+   * Procedure capability policy — text-only JSON; labels vs procedure_class/anatomy (no raw files).
+   */
+  async runProcedureCapabilityPolicyEvaluation(
+    input: ProcedureCapabilityPolicyInput,
+    language: "tr" | "en"
+  ): Promise<ProcedureCapabilityPolicyResult> {
+    if (input.candidate_labels.length === 0) {
+      return finalizeProcedureCapabilityPolicyResult(null, input, "");
+    }
+
+    let token: string;
+    try {
+      token = await this.getAccessToken();
+    } catch (err: unknown) {
+      if ((err as NodeJS.ErrnoException)?.code === "ENOENT") {
+        throw new VertexCredentialError(`Credential file not found at ${KEY_FILE_PATH}`);
+      }
+      throw new VertexCredentialError(
+        err instanceof Error ? err.message : "Failed to obtain access token"
+      );
+    }
+
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), PROCEDURE_CAPABILITY_POLICY_TIMEOUT_MS);
+
+    try {
+      const prompt = buildProcedureCapabilityPolicyPrompt(language, input);
+      const raw = await this.callGeminiText({
+        prompt,
+        token,
+        signal: controller.signal,
+        maxTokens: RAPIMED_MAX_OUTPUT_TOKENS.procedure_capability_policy,
+      });
+      clearTimeout(timer);
+
+      const parsedJson = extractJSONFromText(raw);
+      const partial = parseProcedureCapabilityPolicyResult(parsedJson, input.procedure_class);
+      const finalized = finalizeProcedureCapabilityPolicyResult(
+        partial,
+        input,
+        "no_matching_decision_row_for_label"
+      );
+      const cv = validateProcedureCapabilityPolicyResult(finalized);
+      if (!cv.ok) {
+        console.warn("[RapiMed] Capability policy schema rejection:", cv.errors.join("; "));
+        return finalizeProcedureCapabilityPolicyResult(
+          null,
+          input,
+          "procedure_capability_policy_schema_rejection"
+        );
+      }
+      return finalized;
+    } catch (err: unknown) {
+      clearTimeout(timer);
+      if (!(err instanceof Error && err.name === "AbortError")) {
+        console.warn(
+          "[VertexImage] Procedure capability policy failed:",
+          err instanceof Error ? err.message : err
+        );
+      }
+    }
+
+    return finalizeProcedureCapabilityPolicyResult(
+      null,
+      input,
+      "procedure_capability_policy_parse_failed_or_vertex_error"
+    );
+  }
+
+  /**
+   * Final structured report from adjudicated evidence only (text JSON).
+   */
+  async runFinalReportRendering(
+    input: FinalReportRendererModelInput,
+    language: "tr" | "en",
+    excludedFileIdsFallback: string[]
+  ): Promise<FinalReportRenderResult> {
+    let token: string;
+    try {
+      token = await this.getAccessToken();
+    } catch (err: unknown) {
+      if ((err as NodeJS.ErrnoException)?.code === "ENOENT") {
+        throw new VertexCredentialError(`Credential file not found at ${KEY_FILE_PATH}`);
+      }
+      throw new VertexCredentialError(
+        err instanceof Error ? err.message : "Failed to obtain access token"
+      );
+    }
+
+    const mergedExcluded = [
+      ...new Set([
+        ...excludedFileIdsFallback,
+        ...input.group_provenance_summary.adjudication_global_quarantine_file_ids,
+      ]),
+    ];
+
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), FINAL_REPORT_RENDERER_TIMEOUT_MS);
+
+    try {
+      const prompt = buildFinalReportRendererPrompt(language, input);
+      const raw = await this.callGeminiText({
+        prompt,
+        token,
+        signal: controller.signal,
+        maxTokens: RAPIMED_MAX_OUTPUT_TOKENS.final_report_renderer,
+      });
+      clearTimeout(timer);
+
+      const parsed = extractJSONFromText(raw);
+      const result = parseFinalReportRenderResult(parsed, input, mergedExcluded);
+      if (result) {
+        const v = validateFinalReportRenderResult(result);
+        if (!v.ok) {
+          console.warn("[RapiMed] Final report schema rejection:", v.errors.join("; "));
+        } else {
+          return result;
+        }
+      }
+    } catch (err: unknown) {
+      clearTimeout(timer);
+      if (!(err instanceof Error && err.name === "AbortError")) {
+        console.warn(
+          "[VertexImage] Final report renderer failed:",
+          err instanceof Error ? err.message : err
+        );
+      }
+    }
+
+    return defaultFinalReportRenderResult(
+      input,
+      mergedExcluded,
+      "final_report_render_parse_failed_or_vertex_error",
+      language
+    );
   }
 
   /**
@@ -855,11 +1618,57 @@ Return ONLY valid JSON: { "text": "concatenated extracted text" }`;
     }
   }
 
+  /** Fast triage on one slice (JSON score 0–1). */
+  async triageDicomSlice(
+    imageBase64: string,
+    ctx: DicomTriageSliceContext,
+    token: string,
+    options: { model: string; timeoutMs: number; maxTokens: number }
+  ): Promise<{ score: number }> {
+    const prompt = getDicomTriageSlicePrompt(ctx);
+    const rawBase64 = imageBase64.includes(",")
+      ? imageBase64.split(",")[1]
+      : imageBase64;
+
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), options.timeoutMs);
+
+    try {
+      const raw = await this.callGemini({
+        model: options.model,
+        prompt,
+        imageBase64: rawBase64 ?? imageBase64,
+        token,
+        signal: controller.signal,
+        maxTokens: options.maxTokens,
+      });
+      clearTimeout(timer);
+
+      const parsed = extractJSONFromText(raw);
+      const obj = (parsed && typeof parsed === "object"
+        ? parsed
+        : {}) as Record<string, unknown>;
+      const s = obj.score;
+      const score =
+        typeof s === "number" && Number.isFinite(s)
+          ? Math.max(0, Math.min(1, s))
+          : 0.5;
+      return { score };
+    } catch (err: unknown) {
+      clearTimeout(timer);
+      if (err instanceof Error && err.name === "AbortError") {
+        throw new VertexTimeoutError(options.timeoutMs);
+      }
+      throw err;
+    }
+  }
+
   /** Analyze a single DICOM slice image with domain-specific prompts. */
   async analyzeDicomSlice(
     imageBase64: string,
     ctx: DicomSliceAnalysisContext,
-    token?: string
+    token?: string,
+    options?: { model?: string; timeoutMs?: number; maxTokens?: number }
   ): Promise<DicomSliceAnalysisResult> {
     const resolvedToken =
       token ?? (await this.getAccessToken());
@@ -868,16 +1677,20 @@ Return ONLY valid JSON: { "text": "concatenated extracted text" }`;
       ? imageBase64.split(",")[1]
       : imageBase64;
 
+    const timeoutMs = options?.timeoutMs ?? EXTRACTION_TIMEOUT_MS;
+    const maxTokens = options?.maxTokens ?? 1024;
+
     const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), EXTRACTION_TIMEOUT_MS);
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
 
     try {
       const raw = await this.callGemini({
+        model: options?.model,
         prompt,
         imageBase64: rawBase64 ?? imageBase64,
         token: resolvedToken,
         signal: controller.signal,
-        maxTokens: 1024,
+        maxTokens,
       });
       clearTimeout(timer);
 
@@ -902,7 +1715,7 @@ Return ONLY valid JSON: { "text": "concatenated extracted text" }`;
     } catch (err: unknown) {
       clearTimeout(timer);
       if (err instanceof Error && err.name === "AbortError") {
-        throw new VertexTimeoutError(EXTRACTION_TIMEOUT_MS);
+        throw new VertexTimeoutError(timeoutMs);
       }
       throw err;
     }
@@ -1044,13 +1857,14 @@ Return ONLY valid JSON: { "text": "concatenated extracted text" }`;
     token: string;
     domainRoute: DomainRoute;
     language: "tr" | "en";
+    classification?: ClassificationResult | null;
   }): Promise<{ extraction: Record<string, unknown>; model: string }> {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), EXTRACTION_TIMEOUT_MS);
 
     try {
-      const { imageBase64, token, domainRoute, language } = params;
-      const prompt = getDomainPrompt(domainRoute, language);
+      const { imageBase64, token, domainRoute, language, classification } = params;
+      const prompt = getDomainPrompt(domainRoute, language, classification ?? undefined);
 
       let raw: string;
       const runtimeConfig = await loadRuntimeConfig();
@@ -1173,6 +1987,7 @@ Return ONLY valid JSON: { "text": "concatenated extracted text" }`;
       token,
       domainRoute,
       language,
+      classification,
     });
 
     if (process.env.NODE_ENV !== "production") {

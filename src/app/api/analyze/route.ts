@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { randomUUID } from "crypto";
 import { Anthropic } from "@anthropic-ai/sdk";
 import sharp from "sharp";
 import { z } from "zod";
@@ -25,6 +26,44 @@ import {
 } from "@/lib/ai/studyIntake";
 import { selectBestSlices } from "@/lib/ai/sliceSelector";
 import type { PerImageIntakeResult } from "@/lib/ai/intakePrompts";
+import {
+  buildUploadCohesionArbiterInput,
+  computeKeepIndicesForCohesion,
+  fileIdForUploadIndex,
+} from "@/lib/ai/uploadCohesionArbiter";
+import { buildUploadOutcomeMessage } from "@/lib/ai/uploadOutcomeMessenger";
+import {
+  buildProcedureMapperInputFromPipeline,
+  type ProcedureMapperResult,
+} from "@/lib/ai/procedureModalityAnatomyMapper";
+import {
+  buildImagingAtomicExtractorInput,
+  type ImagingAtomicExtractionResult,
+} from "@/lib/ai/imagingAtomicExtractor";
+import {
+  buildLaboratoryReportExtractorInput,
+  type LaboratoryReportExtractionResult,
+} from "@/lib/ai/laboratoryReportExtractor";
+import {
+  buildWaveformExtractorInput,
+  deriveWaveformFamilyHint,
+  type WaveformExtractionResult,
+} from "@/lib/ai/waveformExtractor";
+import {
+  buildEvidenceAdjudicatorInput,
+  isEvidenceAdjudicationTrustedForFinalRender,
+  type EvidenceAdjudicationResult,
+} from "@/lib/ai/evidenceAdjudicatorMerger";
+import {
+  buildProcedureCapabilityPolicyInput,
+  collectCandidateLabelsForCapabilityPolicy,
+  type ProcedureCapabilityPolicyResult,
+} from "@/lib/ai/procedureCapabilityPolicy";
+import {
+  buildFinalReportRendererModelInput,
+  collectExcludedFileIdsFromCohesion,
+  type FinalReportRenderResult,
+} from "@/lib/ai/finalReportRenderer";
 import type { DomainRoute, ClassificationResult } from "@/lib/ai/promptRouter";
 import { ANTHROPIC_CONFIG } from "@/lib/anthropicConfig";
 import { VERTEX_CONFIG } from "@/lib/vertexConfig";
@@ -54,6 +93,12 @@ const CHUNK_SIZE = Math.max(
   1,
   Math.min(8, parseInt(process.env.VERTEX_IMAGE_CONCURRENCY ?? "2", 10) || 2)
 );
+/**
+ * No redis/Firestore "same upload" cache exists in this route; each POST runs the pipeline.
+ * Set SKIP_ANALYSIS_CACHE=true to force sequential Vertex calls (chunk size 1) and extra logs when validating changes.
+ */
+const skipAnalysisCache = process.env.SKIP_ANALYSIS_CACHE === "true";
+const VERTEX_CHUNK_SIZE = skipAnalysisCache ? 1 : CHUNK_SIZE;
 const SUPPORTED_IMAGE_MIME = new Set([
   "image/jpeg",
   "image/jpg",
@@ -751,6 +796,160 @@ function buildInsufficientDataResponse(params: {
   };
 }
 
+function buildCohesionCancelResponse(params: {
+  language: "tr" | "en";
+  fileNames: string[];
+  overall_reason: string;
+  clarification_questions?: string[];
+}): FinalResponse {
+  const { language, fileNames, overall_reason, clarification_questions = [] } = params;
+  const tr = language === "tr";
+  const reportMode = "UPLOAD_COHESION_CANCEL_REPORT";
+  const reportLabel = {
+    reportMode,
+    inputTypeAnalyzed: tr ? "Yükleme kümesi" : "Upload batch",
+    pipelineRan: "intake -> cohesion-arbiter -> cancel",
+    whatWasActuallyAnalyzed: [
+      tr ? "Tek dosya intake ve küme uyumu değerlendirildi" : "Per-file intake and batch cohesion assessed",
+    ],
+    whatCouldNotBeDetermined: [
+      tr
+        ? "Tutarlı tıbbi analiz için güvenilir grup oluşturulamadı"
+        : "No reliable coherent group for medical analysis",
+    ],
+    analyzedFileCount: 0,
+    totalUploadedCount: fileNames.length,
+  };
+
+  return {
+    summary: tr
+      ? "Yüklenen dosyalar birlikte güvenilir bir tıbbi çalışma oluşturmuyor."
+      : "The uploaded files do not form a reliable coherent medical study together.",
+    key_findings: [
+      overall_reason,
+      ...(clarification_questions.length
+        ? clarification_questions
+        : [
+            tr
+              ? "Aynı ziyaret/çalışmaya ait dosyaları birlikte yükleyin; ilgisiz ekran görüntülerini çıkarın."
+              : "Upload files from the same visit/study together; remove unrelated screenshots.",
+          ]),
+    ],
+    important_terms: [],
+    concern_level: "low",
+    possible_context: tr
+      ? "Bu sonuç tanı değildir; yükleme uyumu teknik sınıflandırmaya dayanır."
+      : "This is not a diagnosis; it reflects technical upload-cohesion classification.",
+    differential_considerations: [],
+    additional_data_requested: [],
+    red_flags: [],
+    literature_support: [],
+    questions_for_doctor: [],
+    follow_up_considerations: tr
+      ? ["Uyumlu dosyalarla tekrar deneyin", "Gerekirse doktorunuza başvurun"]
+      : ["Retry with a coherent set of files", "Contact your clinician if needed"],
+    medical_disclaimer: tr
+      ? "Bu çıktı bilgilendirme amaçlıdır."
+      : "This output is for informational purposes only.",
+    modality: "",
+    anatomical_region: "",
+    professional_report_markdown: "",
+    report_sections: {
+      plain_summary: "",
+      exam_overview: "",
+      technical_summary: "",
+      detailed_findings: [],
+      interpretive_impression: overall_reason,
+      limitations: [overall_reason],
+      next_steps: clarification_questions.length
+        ? clarification_questions
+        : [
+            tr
+              ? "Tıbbi görüntü veya raporları tek bir olaya ait şekilde yeniden yükleyin."
+              : "Re-upload medical images or reports that belong to a single episode.",
+          ],
+    },
+    reportMode,
+    reportLabel,
+  };
+}
+
+function buildProcedureMapperRejectResponse(params: {
+  language: "tr" | "en";
+  fileNames: string[];
+  procedureMapper: ProcedureMapperResult;
+}): FinalResponse {
+  const { language, fileNames, procedureMapper } = params;
+  const tr = language === "tr";
+  const reportMode = "PROCEDURE_MAPPER_REJECT_REPORT";
+  const reasonFromModel =
+    procedureMapper.mapping_conflicts.length > 0
+      ? procedureMapper.mapping_conflicts.join("; ")
+      : procedureMapper.mapping_rationale.length > 0
+        ? procedureMapper.mapping_rationale.join("; ")
+        : tr
+          ? "Güvenilir prosedür veya anatomi yönlendirmesi yapılamadı."
+          : "Reliable procedure or anatomy routing could not be determined.";
+  const reportLabel = {
+    reportMode,
+    inputTypeAnalyzed: tr ? "Yükleme kümesi (prosedür eşleme)" : "Upload batch (procedure mapping)",
+    pipelineRan: "intake -> cohesion-arbiter -> procedure-mapper -> reject",
+    whatWasActuallyAnalyzed: [
+      tr
+        ? "Intake, küme uyumu ve prosedür/modalite/anatomi eşlemesi değerlendirildi"
+        : "Intake, cohesion, and procedure/modality/anatomy mapping assessed",
+    ],
+    whatCouldNotBeDetermined: [
+      tr
+        ? "Bu içerik güvenli bir çıkarıcı hattına yönlendirilemedi"
+        : "This content could not be routed to a safe extractor pipeline",
+    ],
+    analyzedFileCount: 0,
+    totalUploadedCount: fileNames.length,
+  };
+
+  return {
+    summary: tr
+      ? "Yüklenen içerik güvenilir bir tıbbi işlem sınıfına eşlenemedi."
+      : "The uploaded content could not be mapped to a reliable medical procedure class.",
+    key_findings: [reasonFromModel],
+    important_terms: [],
+    concern_level: "low",
+    possible_context: tr
+      ? "Bu sonuç tanı değildir; prosedür eşleme aşaması teknik sınıflandırmaya dayanır."
+      : "This is not a diagnosis; it reflects technical procedure-mapping classification.",
+    differential_considerations: [],
+    additional_data_requested: [],
+    red_flags: [],
+    literature_support: [],
+    questions_for_doctor: [],
+    follow_up_considerations: tr
+      ? ["Uygun tıbbi görüntü veya belgelerle tekrar deneyin", "Gerekirse doktorunuza başvurun"]
+      : ["Retry with appropriate medical images or documents", "Contact your clinician if needed"],
+    medical_disclaimer: tr
+      ? "Bu çıktı bilgilendirme amaçlıdır."
+      : "This output is for informational purposes only.",
+    modality: "",
+    anatomical_region: "",
+    professional_report_markdown: "",
+    report_sections: {
+      plain_summary: "",
+      exam_overview: "",
+      technical_summary: "",
+      detailed_findings: [],
+      interpretive_impression: reasonFromModel,
+      limitations: [reasonFromModel],
+      next_steps: [
+        tr
+          ? "Tanısal görüntüleri veya ilgili raporları net bir bağlamla yeniden yükleyin."
+          : "Re-upload diagnostic images or relevant reports with clear context.",
+      ],
+    },
+    reportMode,
+    reportLabel,
+  };
+}
+
 function buildFallbackResponse(params: {
   language: "tr" | "en";
   fileNames: string[];
@@ -899,6 +1098,13 @@ export async function POST(req: Request) {
     const traceErrors: Array<{ step: string; errorCode: string; message: string }> = [];
     let tracePipeline = "unknown";
     let traceDomain = "unknown";
+    let imagingAtomicExtraction: ImagingAtomicExtractionResult | null = null;
+    let laboratoryReportExtraction: LaboratoryReportExtractionResult | null = null;
+    let waveformExtraction: WaveformExtractionResult | null = null;
+    let evidenceAdjudication: EvidenceAdjudicationResult | null = null;
+    let procedureCapabilityPolicy: ProcedureCapabilityPolicyResult | null = null;
+    let finalReportRender: FinalReportRenderResult | null = null;
+    let coherentSubsetUsed = false;
 
     const logPhase = (phase: string, counts?: Record<string, number>) => {
       const elapsed = Date.now() - phaseStart;
@@ -1030,7 +1236,7 @@ export async function POST(req: Request) {
 
       // ──── NORMALIZATION ────
       logPhase("normalize-start");
-      const preparedImages = await normalizeImages(imagesInput);
+      let preparedImages = await normalizeImages(imagesInput);
       logPhase("normalize-done");
 
       await sendEvent("status", {
@@ -1063,7 +1269,7 @@ export async function POST(req: Request) {
       );
 
       logPhase("intake-start");
-      const perImageIntake: PerImageIntakeResult[] = [];
+      let perImageIntake: PerImageIntakeResult[] = [];
 
       // Single image fast path — skip intake classification, use defaults
       if (preparedImages.length === 1) {
@@ -1083,8 +1289,8 @@ export async function POST(req: Request) {
         logPhase("intake-skip-single");
       } else {
         // Chunked parallel intake to avoid sequential hang on many images
-        for (let c = 0; c < preparedImages.length; c += CHUNK_SIZE) {
-          const chunk = preparedImages.slice(c, c + CHUNK_SIZE);
+        for (let c = 0; c < preparedImages.length; c += VERTEX_CHUNK_SIZE) {
+          const chunk = preparedImages.slice(c, c + VERTEX_CHUNK_SIZE);
           const chunkResults = await Promise.allSettled(
             chunk.map(async (img, ci) => {
               const idx = c + ci;
@@ -1092,7 +1298,12 @@ export async function POST(req: Request) {
                 const rawBase64 = img.originalBase64.includes(",")
                   ? img.originalBase64.split(",")[1]
                   : img.originalBase64;
-                const result = await googleHealthcare.runIntakeClassification(rawBase64, language);
+                const result = await googleHealthcare.runIntakeClassification(rawBase64, language, {
+                  file_id: `upload-${idx}`,
+                  original_filename: img.fileName,
+                  mime_type: img.originalMimeType,
+                  upload_order_index: idx,
+                });
                 return { imageIndex: idx, fileName: img.fileName, ...result };
               } catch (err) {
                 const msg = err instanceof Error ? err.message : "Intake failed";
@@ -1116,7 +1327,7 @@ export async function POST(req: Request) {
           for (const r of chunkResults) {
             if (r.status === "fulfilled") perImageIntake.push(r.value as PerImageIntakeResult);
           }
-          const done = Math.min(c + CHUNK_SIZE, preparedImages.length);
+          const done = Math.min(c + VERTEX_CHUNK_SIZE, preparedImages.length);
           const intakePct =
             18 + Math.round((done / Math.max(1, preparedImages.length)) * 8);
           await sendProgress(
@@ -1129,7 +1340,7 @@ export async function POST(req: Request) {
         }
       }
 
-      const intakeSummary: StudyIntakeSummary = buildStudyIntakeSummary(perImageIntake);
+      let intakeSummary: StudyIntakeSummary = buildStudyIntakeSummary(perImageIntake);
       tracePipeline = intakeSummary.recommendedPipeline;
       logPhase("intake-done", {
         imageCount: intakeSummary.imageCount,
@@ -1151,6 +1362,375 @@ export async function POST(req: Request) {
           ? `Yükleme analizi: ${intakeSummary.recommendedPipeline}, ${intakeSummary.diagnosticImageCount} tanısal görüntü`
           : `Intake: ${intakeSummary.recommendedPipeline}, ${intakeSummary.diagnosticImageCount} diagnostic images`,
       });
+
+      // ──── UPLOAD COHESION ARBITER (batch grouping / quarantine) ────
+      const upload_batch_id = randomUUID();
+      const cohesionInput = buildUploadCohesionArbiterInput({
+        upload_batch_id,
+        perImageIntake,
+        preparedImages,
+      });
+      const cohesion = await googleHealthcare.runUploadCohesionArbitration(
+        cohesionInput,
+        language
+      );
+      const keepIndices = computeKeepIndicesForCohesion(
+        cohesion,
+        preparedImages.length
+      );
+      coherentSubsetUsed =
+        keepIndices.length < cohesionInput.upload_count ||
+        cohesion.process_action === "continue_with_quarantine" ||
+        cohesion.process_action === "continue_provisional";
+      const keepSet = new Set(keepIndices);
+
+      await sendEvent("log", {
+        phase: "cohesion-arbiter",
+        upload_batch_id,
+        process_action: cohesion.process_action,
+        overall_reason: cohesion.overall_reason,
+        groupCount: cohesion.groups.length,
+        quarantinedCount: cohesion.quarantined_files.length,
+        canceledCount: cohesion.canceled_files.length,
+        keptCount: keepIndices.length,
+        user_clarification_needed: cohesion.user_clarification_needed,
+        message:
+          language === "tr"
+            ? `Uyum: ${cohesion.process_action}, ${keepIndices.length}/${preparedImages.length} dosya sürdürülüyor`
+            : `Cohesion: ${cohesion.process_action}, keeping ${keepIndices.length}/${preparedImages.length} files`,
+      });
+
+      const uploadOutcome = buildUploadOutcomeMessage({
+        language,
+        cohesion,
+        imageCount: preparedImages.length,
+      });
+      await sendEvent("log", {
+        phase: "upload-outcome",
+        upload_batch_id,
+        uploadOutcome,
+      });
+
+      if (cohesion.process_action === "cancel" || keepIndices.length === 0) {
+        await sendEvent("status", {
+          step: "cohesion-cancel",
+          message:
+            language === "tr"
+              ? "Yükleme kümesi tutarlı değil; analiz durduruldu."
+              : "Upload batch is not coherent; analysis stopped.",
+        });
+        await sendProgress(
+          "cohesion-cancel",
+          100,
+          language === "tr" ? "Yükleme uygun değil." : "Upload not suitable for analysis."
+        );
+        const cohesionCancel = buildCohesionCancelResponse({
+          language,
+          fileNames: preparedImages.map((img) => img.fileName),
+          overall_reason: cohesion.overall_reason,
+          clarification_questions: cohesion.clarification_questions,
+        });
+        await sendEvent("result", {
+          ...cohesionCancel,
+          meta: {
+            fileNames: preparedImages.map((img) => img.fileName),
+            pipeline: "intake -> cohesion-arbiter -> cancel",
+            cohesion,
+            uploadOutcome,
+          },
+        });
+        await sendEvent("done", { success: true });
+        return;
+      }
+
+      if (keepIndices.length < preparedImages.length) {
+        const sortedKeep = [...keepIndices].sort((a, b) => a - b);
+        const prevIntake = perImageIntake;
+        preparedImages = sortedKeep.map((i) => preparedImages[i]!);
+        perImageIntake = sortedKeep
+          .map((i) => prevIntake.find((p) => p.imageIndex === i))
+          .filter((x): x is PerImageIntakeResult => x != null)
+          .map((p, newIdx) => ({ ...p, imageIndex: newIdx }));
+        intakeSummary = buildStudyIntakeSummary(perImageIntake);
+        tracePipeline = intakeSummary.recommendedPipeline;
+        await sendEvent("log", {
+          phase: "cohesion-filtered",
+          removedCount: cohesionInput.upload_count - keepIndices.length,
+          message:
+            language === "tr"
+              ? `${cohesionInput.upload_count - keepIndices.length} dosya karantina/dışlama nedeniyle çıkarıldı`
+              : `${cohesionInput.upload_count - keepIndices.length} file(s) removed per cohesion/quarantine`,
+        });
+      }
+
+      const procedureMapperInput = buildProcedureMapperInputFromPipeline({
+        cohesion,
+        perImageIntake,
+        preparedImages,
+      });
+      const procedureMapper = await googleHealthcare.runProcedureModalityAnatomyMapping(
+        procedureMapperInput,
+        language
+      );
+
+      await sendEvent("log", {
+        phase: "procedure-mapper",
+        procedure_class: procedureMapper.procedure_class,
+        routing_target: procedureMapper.routing_target,
+        group_id: procedureMapper.group_id,
+        message:
+          language === "tr"
+            ? `Eşleme: ${procedureMapper.procedure_class} → ${procedureMapper.routing_target}`
+            : `Mapping: ${procedureMapper.procedure_class} → ${procedureMapper.routing_target}`,
+      });
+
+      if (procedureMapper.routing_target === "imaging_extractor") {
+        const file_ids = preparedImages.map((_, i) => fileIdForUploadIndex(i));
+        const atomicInput = buildImagingAtomicExtractorInput({
+          group_id: procedureMapper.group_id,
+          file_ids,
+          procedure_class: procedureMapper.procedure_class,
+          raw_modality_codes: procedureMapper.raw_modality_codes,
+          anatomy_mapping: procedureMapper.anatomy,
+          image_count: preparedImages.length,
+          image_level_descriptors: perImageIntake.map(
+            (p) => `${p.fileName}:${p.upload_type}:${p.diagnostic_value}`
+          ),
+          deterministic_study_facts: {
+            studyAdequacy: intakeSummary.studyAdequacy,
+            recommendedPipeline: intakeSummary.recommendedPipeline,
+          },
+        });
+        const imagesByFileId = preparedImages.map((img, i) => ({
+          file_id: fileIdForUploadIndex(i),
+          imageBase64: img.cleanBase64,
+        }));
+        imagingAtomicExtraction = await googleHealthcare.runImagingAtomicExtraction(
+          atomicInput,
+          language,
+          imagesByFileId
+        );
+        await sendEvent("log", {
+          phase: "imaging-atomic-extractor",
+          group_id: imagingAtomicExtraction.group_id,
+          technical_adequacy: imagingAtomicExtraction.technical_adequacy.overall,
+          candidate_findings_count: imagingAtomicExtraction.candidate_findings.length,
+          quality_flags: imagingAtomicExtraction.quality_flags,
+          message:
+            language === "tr"
+              ? `Atomik çıkarım: ${imagingAtomicExtraction.candidate_findings.length} aday bulgu, teknik ${imagingAtomicExtraction.technical_adequacy.overall}`
+              : `Atomic extraction: ${imagingAtomicExtraction.candidate_findings.length} candidate findings, technical ${imagingAtomicExtraction.technical_adequacy.overall}`,
+        });
+      } else if (procedureMapper.routing_target === "lab_extractor") {
+        const file_ids = preparedImages.map((_, i) => fileIdForUploadIndex(i));
+        const labInput = buildLaboratoryReportExtractorInput({
+          group_id: procedureMapper.group_id,
+          file_ids,
+          procedureMapper,
+          metadata: {
+            fileNames: preparedImages.map((img) => img.fileName),
+            mimeTypes: preparedImages.map((img) => img.originalMimeType),
+            studyAdequacy: intakeSummary.studyAdequacy,
+          },
+        });
+        const imagesByFileId = preparedImages.map((img, i) => ({
+          file_id: fileIdForUploadIndex(i),
+          imageBase64: img.cleanBase64,
+        }));
+        laboratoryReportExtraction = await googleHealthcare.runLaboratoryReportExtraction(
+          labInput,
+          language,
+          imagesByFileId
+        );
+        const testCount = laboratoryReportExtraction.panels.reduce(
+          (n, p) => n + p.tests.length,
+          0
+        );
+        await sendEvent("log", {
+          phase: "laboratory-report-extractor",
+          group_id: laboratoryReportExtraction.group_id,
+          report_type: laboratoryReportExtraction.report_type,
+          panel_count: laboratoryReportExtraction.panels.length,
+          test_count: testCount,
+          extraction_quality: laboratoryReportExtraction.extraction_quality.overall,
+          message:
+            language === "tr"
+              ? `Lab çıkarımı: ${testCount} test, ${laboratoryReportExtraction.panels.length} panel`
+              : `Lab extraction: ${testCount} tests, ${laboratoryReportExtraction.panels.length} panels`,
+        });
+      } else if (procedureMapper.routing_target === "waveform_extractor") {
+        const file_ids = preparedImages.map((_, i) => fileIdForUploadIndex(i));
+        const waveformFamily = deriveWaveformFamilyHint(procedureMapper, perImageIntake);
+        const waveformInput = buildWaveformExtractorInput({
+          group_id: procedureMapper.group_id,
+          file_ids,
+          waveform_family_classification: waveformFamily,
+          procedureMapper,
+          metadata: {
+            fileNames: preparedImages.map((img) => img.fileName),
+            mimeTypes: preparedImages.map((img) => img.originalMimeType),
+            studyAdequacy: intakeSummary.studyAdequacy,
+          },
+        });
+        const imagesByFileId = preparedImages.map((img, i) => ({
+          file_id: fileIdForUploadIndex(i),
+          imageBase64: img.cleanBase64,
+        }));
+        waveformExtraction = await googleHealthcare.runWaveformExtraction(
+          waveformInput,
+          language,
+          imagesByFileId
+        );
+        await sendEvent("log", {
+          phase: "waveform-extractor",
+          group_id: waveformExtraction.group_id,
+          waveform_type: waveformExtraction.waveform_type,
+          signal_quality: waveformExtraction.signal_quality.overall,
+          structured_facts_count: waveformExtraction.structured_facts.length,
+          message:
+            language === "tr"
+              ? `Dalga formu: ${waveformExtraction.waveform_type}, ${waveformExtraction.structured_facts.length} yapısal öğe`
+              : `Waveform: ${waveformExtraction.waveform_type}, ${waveformExtraction.structured_facts.length} structured facts`,
+        });
+      }
+
+      if (procedureMapper.routing_target === "reject") {
+        await sendEvent("status", {
+          step: "procedure-mapper-reject",
+          message:
+            language === "tr"
+              ? "Prosedür eşlemesi bu yüklemeyi güvenilir şekilde yönlendiremiyor."
+              : "Procedure mapping cannot reliably route this upload.",
+        });
+        await sendProgress(
+          "procedure-mapper-reject",
+          100,
+          language === "tr" ? "Yükleme reddedildi." : "Upload rejected by procedure mapper."
+        );
+        const procedureMapperReject = buildProcedureMapperRejectResponse({
+          language,
+          fileNames: preparedImages.map((img) => img.fileName),
+          procedureMapper,
+        });
+        await sendEvent("result", {
+          ...procedureMapperReject,
+          meta: {
+            fileNames: preparedImages.map((img) => img.fileName),
+            pipeline: "intake -> cohesion-arbiter -> procedure-mapper -> reject",
+            cohesion,
+            procedureMapper,
+          },
+        });
+        await sendEvent("done", { success: true });
+        return;
+      }
+
+      const capabilityLabels = collectCandidateLabelsForCapabilityPolicy({
+        routingTarget: procedureMapper.routing_target,
+        imagingAtomic: imagingAtomicExtraction,
+        labExtraction: laboratoryReportExtraction,
+        waveformExtraction,
+      });
+      if (capabilityLabels.length > 0) {
+        const capabilityInput = buildProcedureCapabilityPolicyInput(
+          procedureMapper,
+          capabilityLabels
+        );
+        procedureCapabilityPolicy =
+          await googleHealthcare.runProcedureCapabilityPolicyEvaluation(
+            capabilityInput,
+            language
+          );
+        await sendEvent("log", {
+          phase: "procedure-capability-policy",
+          procedure_class: procedureMapper.procedure_class,
+          label_count: capabilityLabels.length,
+          decision_count: procedureCapabilityPolicy.capability_decisions.length,
+          message:
+            language === "tr"
+              ? `Yetenek politikası: ${procedureCapabilityPolicy.capability_decisions.length} etiket`
+              : `Capability policy: ${procedureCapabilityPolicy.capability_decisions.length} labels`,
+        });
+      }
+
+      const adjudicatorInput = buildEvidenceAdjudicatorInput({
+        upload_batch_id,
+        cohesion,
+        procedureMapper,
+        intakeSummary,
+        imagingAtomic: imagingAtomicExtraction,
+        labExtraction: laboratoryReportExtraction,
+        waveformExtraction,
+        documentFacts: null,
+        crossFileSummary: null,
+        capabilityPolicy: procedureCapabilityPolicy,
+        perImageIntake,
+      });
+      evidenceAdjudication = await googleHealthcare.runEvidenceAdjudication(
+        adjudicatorInput,
+        language
+      );
+      await sendEvent("log", {
+        phase: "evidence-adjudicator",
+        upload_batch_id: evidenceAdjudication.upload_batch_id,
+        study_output_count: evidenceAdjudication.study_outputs.length,
+        accepted_total: evidenceAdjudication.study_outputs.reduce(
+          (n, s) => n + s.accepted_items.length,
+          0
+        ),
+        derived_concern: evidenceAdjudication.study_outputs[0]?.derived_concern_level,
+        message:
+          language === "tr"
+            ? `Kanıt hakemi: ${evidenceAdjudication.study_outputs.reduce((n, s) => n + s.accepted_items.length, 0)} kabul`
+            : `Evidence adjudicator: ${evidenceAdjudication.study_outputs.reduce((n, s) => n + s.accepted_items.length, 0)} accepted`,
+      });
+
+      const studyOutputForRender =
+        evidenceAdjudication.study_outputs.find(
+          (s) => s.group_id === procedureMapper.group_id
+        ) ?? evidenceAdjudication.study_outputs[0];
+      if (
+        studyOutputForRender &&
+        evidenceAdjudication &&
+        isEvidenceAdjudicationTrustedForFinalRender(evidenceAdjudication)
+      ) {
+        const excludedIdsFallback = collectExcludedFileIdsFromCohesion(cohesion);
+        const rendererModelInput = buildFinalReportRendererModelInput({
+          study_output: studyOutputForRender,
+          cohesion,
+          procedureMapper,
+          imagingTechnicalAdequacy:
+            imagingAtomicExtraction?.technical_adequacy ?? null,
+          coherent_subset_used: coherentSubsetUsed,
+          global_quarantine_file_ids: evidenceAdjudication.global_quarantine_summary.map(
+            (q) => q.file_id
+          ),
+        });
+        finalReportRender = await googleHealthcare.runFinalReportRendering(
+          rendererModelInput,
+          language,
+          excludedIdsFallback
+        );
+        await sendEvent("log", {
+          phase: "final-report-render",
+          group_id: finalReportRender.group_id,
+          report_type: finalReportRender.report_type,
+          concern_level: finalReportRender.concern_level,
+          message:
+            language === "tr"
+              ? `Son rapor: ${finalReportRender.report_type}, kaygı ${finalReportRender.concern_level}`
+              : `Final report: ${finalReportRender.report_type}, concern ${finalReportRender.concern_level}`,
+        });
+      } else if (studyOutputForRender && evidenceAdjudication) {
+        await sendEvent("log", {
+          phase: "final-report-render-skipped",
+          reason: "adjudication_not_trusted_for_final_render",
+          message:
+            language === "tr"
+              ? "Nihai rapor: hakem çıktısı doğrulanamadığı için atlandı."
+              : "Final report skipped: adjudication did not pass pipeline trust checks.",
+        });
+      }
 
       // ──── CLIENT INTAKE-AWARE ROUTING CONTEXT ────
       if (clientRoutingContext) {
@@ -1249,12 +1829,16 @@ export async function POST(req: Request) {
               : `Selected best ${indicesToProcess.length} of ${preparedImages.length} uploaded images for analysis.`,
         });
       } else {
+        // Use all viewable indices — not only strict diagnostic-image rows. If at least one
+        // image is diagnostic-image but another is mis-tagged (unknown/viewer-screenshot),
+        // diagnosticIndices alone would silently drop the second upload.
         indicesToProcess =
-          diagnosticIndices.length > 0 ? diagnosticIndices : viewableIndices;
-        if (indicesToProcess.length === 0)
-          indicesToProcess = preparedImages.map((_, i) => i);
+          viewableIndices.length > 0
+            ? viewableIndices
+            : preparedImages.map((_, i) => i);
       }
       const imagesToProcess = indicesToProcess.map((idx) => preparedImages[idx]).filter(Boolean);
+
       const useLimitedReportMode =
         (diagnosticIndices.length === 0 && viewableIndices.length > 0) ||
         intakeSummary.adequacyTier === "limited" ||
@@ -1284,11 +1868,16 @@ export async function POST(req: Request) {
 
       // ──── CLASSIFICATION + EXTRACTION (chunked with timeout) ────
       logPhase("vertex-batch-start");
+      if (skipAnalysisCache) {
+        console.log(
+          `[analyze][${uploadId}] SKIP_ANALYSIS_CACHE=true cache-bypass=vertex-chunk-1 (no server result cache in route)`
+        );
+      }
       const vertexViews: VertexViewWithMeta[] = [];
       const vertexErrors: Array<{ fileName: string; error: string }> = [];
       const vertexPhaseStart = Date.now();
 
-      for (let c = 0; c < imagesToProcess.length; c += CHUNK_SIZE) {
+      for (let c = 0; c < imagesToProcess.length; c += VERTEX_CHUNK_SIZE) {
         if (Date.now() - vertexPhaseStart > VERTEX_PHASE_MAX_MS) {
           await sendEvent("log", {
             phase: "vertex-timeout",
@@ -1301,19 +1890,28 @@ export async function POST(req: Request) {
           break;
         }
 
-        const chunk = imagesToProcess.slice(c, c + CHUNK_SIZE);
+        const chunk = imagesToProcess.slice(c, c + VERTEX_CHUNK_SIZE);
         await sendEvent("log", {
           phase: "vertex-chunk",
           chunkStart: c + 1,
-          chunkEnd: Math.min(c + CHUNK_SIZE, imagesToProcess.length),
+          chunkEnd: Math.min(c + VERTEX_CHUNK_SIZE, imagesToProcess.length),
           total: imagesToProcess.length,
           message: language === "tr"
-            ? `Görüntü ${c + 1}–${Math.min(c + CHUNK_SIZE, imagesToProcess.length)} / ${imagesToProcess.length} analiz ediliyor...`
-            : `Analyzing images ${c + 1}–${Math.min(c + CHUNK_SIZE, imagesToProcess.length)} of ${imagesToProcess.length}...`,
+            ? `Görüntü ${c + 1}–${Math.min(c + VERTEX_CHUNK_SIZE, imagesToProcess.length)} / ${imagesToProcess.length} analiz ediliyor...`
+            : `Analyzing images ${c + 1}–${Math.min(c + VERTEX_CHUNK_SIZE, imagesToProcess.length)} of ${imagesToProcess.length}...`,
         });
 
         const chunkResults = await Promise.allSettled(
-          chunk.map(async (current) => {
+          chunk.map(async (current, idxInChunk) => {
+            const imageOrdinal = c + idxInChunk + 1;
+            if (skipAnalysisCache) {
+              console.log(
+                `[analyze][${uploadId}] per-image Vertex ${imageOrdinal}/${imagesToProcess.length} (independent call)`
+              );
+            }
+            console.log(
+              `[analysis] processing image ${imageOrdinal} of ${imagesToProcess.length}: ${current.fileName ?? "unnamed"}`
+            );
             const controller = new AbortController();
             const timer = setTimeout(() => controller.abort(), PER_IMAGE_TIMEOUT_MS);
             try {
@@ -1523,7 +2121,7 @@ export async function POST(req: Request) {
         confidence: extractionConfidence,
       };
 
-      if (shouldFetchLiterature(litInput)) {
+      if (shouldFetchLiterature(litInput, runtimeConfig.literatureEnabled)) {
         await sendEvent("status", {
           step: "literature-search",
           message: language === "tr"
@@ -1849,6 +2447,14 @@ export async function POST(req: Request) {
           route: v.domainRoute,
           model: v.model,
         })),
+        procedureModalityMap: procedureMapper,
+        imagingAtomicExtraction,
+        laboratoryReportExtraction,
+        waveformExtraction,
+        evidenceAdjudication,
+        procedureCapabilityPolicy,
+        finalReportRender,
+        uploadOutcome,
       };
 
       if (process.env.NODE_ENV !== "production") {
@@ -1872,6 +2478,11 @@ export async function POST(req: Request) {
             seriesGuess: p.series_type_guess,
             confidence: p.confidence,
           })),
+          procedureModalityMap: {
+            procedure_class: procedureMapper.procedure_class,
+            routing_target: procedureMapper.routing_target,
+            anatomy: procedureMapper.anatomy,
+          },
         };
       }
 
