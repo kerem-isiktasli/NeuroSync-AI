@@ -927,6 +927,10 @@ export function buildEvidenceAdjudicatorInput(params: {
     routing_outputs: {
       procedure_class: procedureMapper.procedure_class,
       routing_target: procedureMapper.routing_target,
+      routing_decision: procedureMapper.routing_decision,
+      report_family: procedureMapper.report_family,
+      mapping_confidence: procedureMapper.mapping_confidence,
+      provisional_mapping: procedureMapper.provisional_mapping,
       study_purpose: procedureMapper.study_purpose,
       anatomy: procedureMapper.anatomy,
       raw_modality_codes: procedureMapper.raw_modality_codes,
@@ -951,7 +955,9 @@ export function buildEvidenceAdjudicatorInput(params: {
         : null,
     document_extracted_facts: params.documentFacts ?? null,
     provenance_quality_metrics: {
-      procedure_mapper_overall: procedureMapper.confidence_breakdown?.overall,
+      procedure_mapper_overall:
+        procedureMapper.mapping_confidence ??
+        procedureMapper.confidence_breakdown?.overall,
     },
     cross_file_agreement_metrics: {
       summary: params.crossFileSummary ?? null,

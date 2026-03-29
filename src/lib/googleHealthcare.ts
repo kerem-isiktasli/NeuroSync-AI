@@ -94,6 +94,21 @@ import {
   type FinalReportRendererModelInput,
   type FinalReportRenderResult,
 } from './ai/finalReportRenderer';
+import {
+  buildFinalReportValidatorPrompt,
+  parseFinalReportValidationResult,
+  defaultFinalReportValidationResult,
+  applyDeterministicValidatorEnforcement,
+  type FinalReportValidatorInput,
+  type FinalReportValidationResult,
+} from './ai/finalReportValidator';
+import {
+  buildConstrainedReportRepairerPrompt,
+  parseConstrainedReportRepairResult,
+  fallbackConstrainedRepairEnforcementOnly,
+  type ConstrainedReportRepairerInput,
+  type ConstrainedReportRepairResult,
+} from './ai/constrainedReportRepairer';
 import { VERTEX_CONFIG, getVertexEndpoint } from './vertexConfig';
 import { loadRuntimeConfig, type RuntimeConfig } from './runtimeConfig';
 import { RAPIMED_MAX_OUTPUT_TOKENS } from './rapiMed/stageTokenLimits';
@@ -105,6 +120,8 @@ import {
   validateWaveformExtractionResult,
   validateEvidenceAdjudicationResult,
   validateFinalReportRenderResult,
+  validateFinalReportValidationResult,
+  validateConstrainedReportRepairResult,
   validateProcedureCapabilityPolicyResult,
 } from './rapiMed/stageSchemaValidation';
 import {
@@ -192,6 +209,8 @@ const MAX_WAVEFORM_EXTRACTOR_IMAGES = 12;
 const EVIDENCE_ADJUDICATOR_TIMEOUT_MS = 60_000;
 const PROCEDURE_CAPABILITY_POLICY_TIMEOUT_MS = 30_000;
 const FINAL_REPORT_RENDERER_TIMEOUT_MS = 90_000;
+const FINAL_REPORT_VALIDATOR_TIMEOUT_MS = 60_000;
+const CONSTRAINED_REPORT_REPAIR_TIMEOUT_MS = 90_000;
 const CLASSIFY_TIMEOUT_MS = 20_000;
 const EXTRACTION_TIMEOUT_MS = 50_000;
 const DOMAIN_ANALYZER_TIMEOUT_MS = 45_000;
@@ -1233,6 +1252,139 @@ export class VertexImageService {
       mergedExcluded,
       "final_report_render_parse_failed_or_vertex_error",
       language
+    );
+  }
+
+  /**
+   * Audit rendered final report vs locked facts and adjudication (text-only JSON).
+   */
+  async runFinalReportValidation(
+    input: FinalReportValidatorInput,
+    language: "tr" | "en"
+  ): Promise<FinalReportValidationResult> {
+    let token: string;
+    try {
+      token = await this.getAccessToken();
+    } catch (err: unknown) {
+      if ((err as NodeJS.ErrnoException)?.code === "ENOENT") {
+        throw new VertexCredentialError(`Credential file not found at ${KEY_FILE_PATH}`);
+      }
+      throw new VertexCredentialError(
+        err instanceof Error ? err.message : "Failed to obtain access token"
+      );
+    }
+
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), FINAL_REPORT_VALIDATOR_TIMEOUT_MS);
+
+    let base: FinalReportValidationResult;
+    try {
+      const prompt = buildFinalReportValidatorPrompt(language, input);
+      const raw = await this.callGeminiText({
+        prompt,
+        token,
+        signal: controller.signal,
+        maxTokens: RAPIMED_MAX_OUTPUT_TOKENS.final_report_validator,
+      });
+      clearTimeout(timer);
+
+      const parsed = extractJSONFromText(raw);
+      const parsedResult = parseFinalReportValidationResult(parsed, input.group_id);
+      if (parsedResult) {
+        const v = validateFinalReportValidationResult(parsedResult);
+        if (!v.ok) {
+          console.warn("[RapiMed] Final report validator schema rejection:", v.errors.join("; "));
+          base = defaultFinalReportValidationResult(
+            input.group_id,
+            "final_report_validator_schema_rejection"
+          );
+        } else {
+          base = parsedResult;
+        }
+      } else {
+        base = defaultFinalReportValidationResult(
+          input.group_id,
+          "final_report_validator_parse_failed"
+        );
+      }
+    } catch (err: unknown) {
+      clearTimeout(timer);
+      if (!(err instanceof Error && err.name === "AbortError")) {
+        console.warn(
+          "[VertexImage] Final report validator failed:",
+          err instanceof Error ? err.message : err
+        );
+      }
+      base = defaultFinalReportValidationResult(
+        input.group_id,
+        "final_report_validator_vertex_error_or_timeout"
+      );
+    }
+
+    return applyDeterministicValidatorEnforcement(input, base);
+  }
+
+  /**
+   * Constrained repair of a failed validation report (text-only JSON).
+   */
+  async runConstrainedReportRepair(
+    repairInput: ConstrainedReportRepairerInput,
+    rendererInput: FinalReportRendererModelInput,
+    language: "tr" | "en"
+  ): Promise<ConstrainedReportRepairResult> {
+    let token: string;
+    try {
+      token = await this.getAccessToken();
+    } catch (err: unknown) {
+      if ((err as NodeJS.ErrnoException)?.code === "ENOENT") {
+        throw new VertexCredentialError(`Credential file not found at ${KEY_FILE_PATH}`);
+      }
+      throw new VertexCredentialError(
+        err instanceof Error ? err.message : "Failed to obtain access token"
+      );
+    }
+
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), CONSTRAINED_REPORT_REPAIR_TIMEOUT_MS);
+
+    try {
+      const prompt = buildConstrainedReportRepairerPrompt(language, repairInput);
+      const raw = await this.callGeminiText({
+        prompt,
+        token,
+        signal: controller.signal,
+        maxTokens: RAPIMED_MAX_OUTPUT_TOKENS.constrained_report_repairer,
+      });
+      clearTimeout(timer);
+
+      const parsed = extractJSONFromText(raw);
+      const result = parseConstrainedReportRepairResult(parsed, rendererInput);
+      if (result) {
+        const v = validateConstrainedReportRepairResult(result);
+        if (!v.ok) {
+          console.warn("[RapiMed] Constrained repair schema rejection:", v.errors.join("; "));
+          return fallbackConstrainedRepairEnforcementOnly(
+            repairInput,
+            rendererInput,
+            "constrained_repair_schema_rejection"
+          );
+        }
+        return result;
+      }
+    } catch (err: unknown) {
+      clearTimeout(timer);
+      if (!(err instanceof Error && err.name === "AbortError")) {
+        console.warn(
+          "[VertexImage] Constrained report repair failed:",
+          err instanceof Error ? err.message : err
+        );
+      }
+    }
+
+    return fallbackConstrainedRepairEnforcementOnly(
+      repairInput,
+      rendererInput,
+      "constrained_repair_parse_failed_or_vertex_error"
     );
   }
 

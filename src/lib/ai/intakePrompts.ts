@@ -15,6 +15,13 @@ export type IntakeDiagnosticValue = "high" | "medium" | "low" | "none";
 
 export type IntakeImagePlane = "sagittal" | "axial" | "coronal" | "oblique" | "unknown";
 
+/** Set by single-file intake classifier when that path runs. */
+export type IntakeReadabilityStatus = "readable" | "partially_readable" | "unreadable";
+
+export type IntakeLinkabilityStatus = "strong" | "moderate" | "weak" | "unknown";
+
+export type IntakeDiagnosticUtilityStatus = "high" | "moderate" | "low" | "unknown";
+
 export interface PerImageIntakeResult {
   imageIndex: number;
   fileName: string;
@@ -32,6 +39,9 @@ export interface PerImageIntakeResult {
   intake_is_medical?: boolean;
   quarantine_suggested?: boolean;
   quarantine_reason?: string | null;
+  readability_status?: IntakeReadabilityStatus;
+  linkability_status?: IntakeLinkabilityStatus;
+  diagnostic_utility_status?: IntakeDiagnosticUtilityStatus;
 }
 
 export function resolveUploadType(raw?: string): UploadType {

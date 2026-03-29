@@ -77,12 +77,26 @@ const zRoutingTarget = z.enum([
   "reject",
 ]);
 
+const zReportFamily = z.enum([
+  "imaging",
+  "laboratory",
+  "waveform",
+  "document",
+  "mixed_context",
+]);
+
+const zMapperRoutingDecision = z.enum([
+  "accept",
+  "accept_provisional",
+  "reject",
+]);
+
 const zProcedureMapperResult = z.object({
   group_id: z.string().min(1),
   procedure_class: z.string().min(1),
   raw_modality_codes: z.array(z.string()),
   study_purpose: z.string(),
-  content_subtype: z.string(),
+  report_family: zReportFamily,
   anatomy: z.object({
     body_region: z.string(),
     organ_system: z.string(),
@@ -92,7 +106,13 @@ const zProcedureMapperResult = z.object({
     level_or_segment: z.string().nullable(),
     location_precision: z.string(),
   }),
+  mapping_confidence: z.number(),
+  provisional_mapping: z.boolean(),
+  mapping_rationale: z.array(z.string()),
+  mapping_conflicts: z.array(z.string()),
+  routing_decision: zMapperRoutingDecision,
   routing_target: zRoutingTarget,
+  content_subtype: z.string(),
   confidence_breakdown: z.object({
     metadata_support: z.number(),
     ocr_support: z.number(),
@@ -100,8 +120,6 @@ const zProcedureMapperResult = z.object({
     cross_file_support: z.number(),
     overall: z.number(),
   }),
-  mapping_rationale: z.array(z.string()),
-  mapping_conflicts: z.array(z.string()),
 });
 
 const zTechnicalOverall = z.enum(["adequate", "limited", "non_diagnostic"]);
@@ -222,6 +240,28 @@ const zFinalReportRenderResult = z.object({
   }),
 });
 
+const zPublishability = z.enum(["publish", "repair_required", "block"]);
+
+const zValidationCategory = z.object({
+  passed: z.boolean(),
+  issues: z.array(z.string()),
+});
+
+const zFinalReportValidationResult = z.object({
+  group_id: z.string().min(1),
+  is_valid: z.boolean(),
+  publishability: zPublishability,
+  validation_results: z.object({
+    study_fact_consistency: zValidationCategory,
+    evidence_consistency: zValidationCategory,
+    concern_consistency: zValidationCategory,
+    limitation_consistency: zValidationCategory,
+    forbidden_content: zValidationCategory,
+  }),
+  repair_instructions: z.array(z.string()),
+  blocking_reasons: z.array(z.string()),
+});
+
 const zCapabilityDecision = z.enum([
   "within_capability",
   "outside_capability",
@@ -273,6 +313,20 @@ export function validateEvidenceAdjudicationResult(data: unknown): StageValidati
 
 export function validateFinalReportRenderResult(data: unknown): StageValidationResult {
   return runZod(zFinalReportRenderResult, data, "final_report");
+}
+
+export function validateFinalReportValidationResult(data: unknown): StageValidationResult {
+  return runZod(zFinalReportValidationResult, data, "final_report_validator");
+}
+
+const zConstrainedReportRepairResult = z.object({
+  group_id: z.string().min(1),
+  repaired_report: zFinalReportRenderResult,
+  repair_summary: z.array(z.string()),
+});
+
+export function validateConstrainedReportRepairResult(data: unknown): StageValidationResult {
+  return runZod(zConstrainedReportRepairResult, data, "constrained_report_repairer");
 }
 
 export function validateProcedureCapabilityPolicyResult(data: unknown): StageValidationResult {

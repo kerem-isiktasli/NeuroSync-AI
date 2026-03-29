@@ -32,6 +32,12 @@ import {
   fileIdForUploadIndex,
 } from "@/lib/ai/uploadCohesionArbiter";
 import { buildUploadOutcomeMessage } from "@/lib/ai/uploadOutcomeMessenger";
+import { buildTechnicalOutcomeReport } from "@/lib/ai/technicalOutcomeRenderer";
+import {
+  buildLockedStudyFactsRecord,
+  deriveCoherenceStatusFromCohesion,
+  type StudyFactLockerResult,
+} from "@/lib/ai/studyFactLocker";
 import {
   buildProcedureMapperInputFromPipeline,
   type ProcedureMapperResult,
@@ -64,6 +70,12 @@ import {
   collectExcludedFileIdsFromCohesion,
   type FinalReportRenderResult,
 } from "@/lib/ai/finalReportRenderer";
+import type { FinalReportValidationResult } from "@/lib/ai/finalReportValidator";
+import type { ConstrainedReportRepairResult } from "@/lib/ai/constrainedReportRepairer";
+import {
+  evaluateChestXrayCapabilityGuard,
+  type ChestXrayCapabilityGuardResult,
+} from "@/lib/ai/chestXrayCapabilityGuard";
 import type { DomainRoute, ClassificationResult } from "@/lib/ai/promptRouter";
 import { ANTHROPIC_CONFIG } from "@/lib/anthropicConfig";
 import { VERTEX_CONFIG } from "@/lib/vertexConfig";
@@ -1104,7 +1116,11 @@ export async function POST(req: Request) {
     let evidenceAdjudication: EvidenceAdjudicationResult | null = null;
     let procedureCapabilityPolicy: ProcedureCapabilityPolicyResult | null = null;
     let finalReportRender: FinalReportRenderResult | null = null;
+    let finalReportValidation: FinalReportValidationResult | null = null;
+    let constrainedReportRepair: ConstrainedReportRepairResult | null = null;
+    let chestXrayCapabilityGuard: ChestXrayCapabilityGuardResult | null = null;
     let coherentSubsetUsed = false;
+    let studyFactLock: StudyFactLockerResult | null = null;
 
     const logPhase = (phase: string, counts?: Record<string, number>) => {
       const elapsed = Date.now() - phaseStart;
@@ -1405,10 +1421,19 @@ export async function POST(req: Request) {
         cohesion,
         imageCount: preparedImages.length,
       });
+      const technicalOutcomeAfterCohesion = buildTechnicalOutcomeReport({
+        language,
+        phase: "pipeline_continuing",
+        cohesion,
+        procedureMapper: null,
+        coherentSubsetUsed,
+        excludedFileCount: uploadOutcome.excluded_files.length,
+      });
       await sendEvent("log", {
         phase: "upload-outcome",
         upload_batch_id,
         uploadOutcome,
+        technicalOutcome: technicalOutcomeAfterCohesion,
       });
 
       if (cohesion.process_action === "cancel" || keepIndices.length === 0) {
@@ -1430,6 +1455,11 @@ export async function POST(req: Request) {
           overall_reason: cohesion.overall_reason,
           clarification_questions: cohesion.clarification_questions,
         });
+        const technicalOutcomeCohesionCancel = buildTechnicalOutcomeReport({
+          language,
+          phase: "cohesion_cancel",
+          cohesion,
+        });
         await sendEvent("result", {
           ...cohesionCancel,
           meta: {
@@ -1437,6 +1467,7 @@ export async function POST(req: Request) {
             pipeline: "intake -> cohesion-arbiter -> cancel",
             cohesion,
             uploadOutcome,
+            technicalOutcome: technicalOutcomeCohesionCancel,
           },
         });
         await sendEvent("done", { success: true });
@@ -1612,6 +1643,14 @@ export async function POST(req: Request) {
           fileNames: preparedImages.map((img) => img.fileName),
           procedureMapper,
         });
+        const technicalOutcomeProcedureReject = buildTechnicalOutcomeReport({
+          language,
+          phase: "procedure_mapper_reject",
+          cohesion,
+          procedureMapper,
+          coherentSubsetUsed,
+          excludedFileCount: uploadOutcome.excluded_files.length,
+        });
         await sendEvent("result", {
           ...procedureMapperReject,
           meta: {
@@ -1619,6 +1658,8 @@ export async function POST(req: Request) {
             pipeline: "intake -> cohesion-arbiter -> procedure-mapper -> reject",
             cohesion,
             procedureMapper,
+            uploadOutcome,
+            technicalOutcome: technicalOutcomeProcedureReject,
           },
         });
         await sendEvent("done", { success: true });
@@ -1670,6 +1711,43 @@ export async function POST(req: Request) {
         adjudicatorInput,
         language
       );
+      const studyOutputForRender =
+        evidenceAdjudication.study_outputs.find(
+          (s) => s.group_id === procedureMapper.group_id
+        ) ?? evidenceAdjudication.study_outputs[0];
+
+      if (studyOutputForRender) {
+        const primaryForLock =
+          cohesion.groups.find((g) => g.group_id === procedureMapper.group_id) ??
+          cohesion.groups.find((g) => g.group_type !== "excluded_group");
+        const includedForLock =
+          primaryForLock?.included_file_ids?.length
+            ? [...primaryForLock.included_file_ids]
+            : preparedImages.map((_, i) => fileIdForUploadIndex(i));
+        const excludedForLock = new Set<string>([
+          ...collectExcludedFileIdsFromCohesion(cohesion),
+          ...(primaryForLock?.excluded_file_ids ?? []),
+        ]);
+        studyFactLock = buildLockedStudyFactsRecord({
+          study_output: studyOutputForRender,
+          procedure_mapper_fallback: procedureMapper,
+          included_file_ids: includedForLock,
+          excluded_file_ids: [...excludedForLock],
+          coherent_subset_used: coherentSubsetUsed,
+          coherence_status: deriveCoherenceStatusFromCohesion(
+            cohesion,
+            coherentSubsetUsed
+          ),
+          image_count_if_known: preparedImages.length,
+          verified_views_or_series_if_known:
+            imagingAtomicExtraction != null
+              ? imagingAtomicExtraction.verified_views_or_series
+                  .map((v) => String(v.name ?? "").trim())
+                  .filter(Boolean)
+              : null,
+        });
+      }
+
       await sendEvent("log", {
         phase: "evidence-adjudicator",
         upload_batch_id: evidenceAdjudication.upload_batch_id,
@@ -1679,16 +1757,12 @@ export async function POST(req: Request) {
           0
         ),
         derived_concern: evidenceAdjudication.study_outputs[0]?.derived_concern_level,
+        study_fact_lock: studyFactLock,
         message:
           language === "tr"
             ? `Kanıt hakemi: ${evidenceAdjudication.study_outputs.reduce((n, s) => n + s.accepted_items.length, 0)} kabul`
             : `Evidence adjudicator: ${evidenceAdjudication.study_outputs.reduce((n, s) => n + s.accepted_items.length, 0)} accepted`,
       });
-
-      const studyOutputForRender =
-        evidenceAdjudication.study_outputs.find(
-          (s) => s.group_id === procedureMapper.group_id
-        ) ?? evidenceAdjudication.study_outputs[0];
       if (
         studyOutputForRender &&
         evidenceAdjudication &&
@@ -1705,21 +1779,96 @@ export async function POST(req: Request) {
           global_quarantine_file_ids: evidenceAdjudication.global_quarantine_summary.map(
             (q) => q.file_id
           ),
+          studyFactLock,
+          image_count_if_known: preparedImages.length,
         });
         finalReportRender = await googleHealthcare.runFinalReportRendering(
           rendererModelInput,
           language,
           excludedIdsFallback
         );
+        finalReportValidation = await googleHealthcare.runFinalReportValidation(
+          {
+            group_id: studyOutputForRender.group_id,
+            locked_study_facts: rendererModelInput.locked_study_facts,
+            technical_context: studyOutputForRender.technical_context,
+            accepted_items: studyOutputForRender.accepted_items,
+            uncertain_items: studyOutputForRender.uncertain_items,
+            cannot_determine_items: studyOutputForRender.cannot_determine_items,
+            rejected_items: studyOutputForRender.rejected_items,
+            rendered_report_json: finalReportRender,
+          },
+          language
+        );
         await sendEvent("log", {
           phase: "final-report-render",
           group_id: finalReportRender.group_id,
           report_type: finalReportRender.report_type,
           concern_level: finalReportRender.concern_level,
+          validation_publishability: finalReportValidation.publishability,
+          validation_is_valid: finalReportValidation.is_valid,
           message:
             language === "tr"
               ? `Son rapor: ${finalReportRender.report_type}, kaygı ${finalReportRender.concern_level}`
               : `Final report: ${finalReportRender.report_type}, concern ${finalReportRender.concern_level}`,
+        });
+        await sendEvent("log", {
+          phase: "final-report-validate",
+          group_id: finalReportValidation.group_id,
+          is_valid: finalReportValidation.is_valid,
+          publishability: finalReportValidation.publishability,
+          blocking_reasons: finalReportValidation.blocking_reasons,
+          message:
+            language === "tr"
+              ? `Rapor doğrulama: ${finalReportValidation.publishability}`
+              : `Report validation: ${finalReportValidation.publishability}`,
+        });
+
+        if (
+          !finalReportValidation.is_valid ||
+          finalReportValidation.publishability !== "publish"
+        ) {
+          constrainedReportRepair = await googleHealthcare.runConstrainedReportRepair(
+            {
+              locked_study_facts: rendererModelInput.locked_study_facts,
+              technical_context: studyOutputForRender.technical_context,
+              accepted_items: studyOutputForRender.accepted_items,
+              uncertain_items: studyOutputForRender.uncertain_items,
+              cannot_determine_items: studyOutputForRender.cannot_determine_items,
+              rejected_items: studyOutputForRender.rejected_items,
+              invalid_rendered_report_json: finalReportRender,
+              validator_output: finalReportValidation,
+            },
+            rendererModelInput,
+            language
+          );
+          finalReportRender = constrainedReportRepair.repaired_report;
+          await sendEvent("log", {
+            phase: "final-report-repair",
+            group_id: constrainedReportRepair.group_id,
+            repair_summary: constrainedReportRepair.repair_summary,
+            concern_level_after: finalReportRender.concern_level,
+            message:
+              language === "tr"
+                ? "Kısıtlı rapor onarımı uygulandı"
+                : "Constrained report repair applied",
+          });
+        }
+
+        chestXrayCapabilityGuard = evaluateChestXrayCapabilityGuard({
+          locked_study_facts: rendererModelInput.locked_study_facts,
+          accepted_items: studyOutputForRender.accepted_items,
+          rendered_report_json: finalReportRender,
+        });
+        await sendEvent("log", {
+          phase: "chest-xray-capability-guard",
+          passed: chestXrayCapabilityGuard.passed,
+          recommendation: chestXrayCapabilityGuard.recommendation,
+          issues: chestXrayCapabilityGuard.issues,
+          message:
+            language === "tr"
+              ? `CXR guard: ${chestXrayCapabilityGuard.recommendation}`
+              : `CXR capability guard: ${chestXrayCapabilityGuard.recommendation}`,
         });
       } else if (studyOutputForRender && evidenceAdjudication) {
         await sendEvent("log", {
@@ -2454,7 +2603,19 @@ export async function POST(req: Request) {
         evidenceAdjudication,
         procedureCapabilityPolicy,
         finalReportRender,
+        finalReportValidation,
+        constrainedReportRepair,
+        chestXrayCapabilityGuard,
         uploadOutcome,
+        studyFactLock,
+        technicalOutcome: buildTechnicalOutcomeReport({
+          language,
+          phase: "pipeline_continuing",
+          cohesion,
+          procedureMapper,
+          coherentSubsetUsed,
+          excludedFileCount: uploadOutcome.excluded_files.length,
+        }),
       };
 
       if (process.env.NODE_ENV !== "production") {

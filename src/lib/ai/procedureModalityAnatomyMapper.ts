@@ -70,6 +70,15 @@ export type RoutingTarget =
   | "document_extractor"
   | "reject";
 
+export type ReportFamily =
+  | "imaging"
+  | "laboratory"
+  | "waveform"
+  | "document"
+  | "mixed_context";
+
+export type MapperRoutingDecision = "accept" | "accept_provisional" | "reject";
+
 export interface AnatomyHierarchy {
   body_region: string;
   organ_system: string;
@@ -108,12 +117,19 @@ export interface ProcedureMapperResult {
   procedure_class: ProcedureClass;
   raw_modality_codes: string[];
   study_purpose: StudyPurpose;
-  content_subtype: string;
+  report_family: ReportFamily;
   anatomy: AnatomyHierarchy;
-  routing_target: RoutingTarget;
-  confidence_breakdown: ConfidenceBreakdown;
+  mapping_confidence: number;
+  provisional_mapping: boolean;
   mapping_rationale: string[];
   mapping_conflicts: string[];
+  routing_decision: MapperRoutingDecision;
+  /** Derived from procedure_class + report_family when routing_decision is not reject (or from legacy routing_target). */
+  routing_target: RoutingTarget;
+  /** Legacy auxiliary label for extractors; optional in model JSON, defaulted from procedure_class. */
+  content_subtype: string;
+  /** Legacy breakdown; overall mirrors mapping_confidence when not supplied by the model. */
+  confidence_breakdown: ConfidenceBreakdown;
 }
 
 const PROCEDURE_SET = new Set<string>(PROCEDURE_CLASS_VALUES);
@@ -135,6 +151,82 @@ const ROUTING_SET = new Set<string>([
   "reject",
 ]);
 
+const REPORT_FAMILY_SET = new Set<string>([
+  "imaging",
+  "laboratory",
+  "waveform",
+  "document",
+  "mixed_context",
+]);
+
+const ROUTING_DECISION_SET = new Set<string>([
+  "accept",
+  "accept_provisional",
+  "reject",
+]);
+
+const PROCEDURE_IMAGING = new Set<ProcedureClass>([
+  "projection_radiography",
+  "ct",
+  "mri",
+  "ultrasound",
+  "pet_or_nuclear",
+  "fluoroscopy_or_angiography",
+  "mammography",
+  "dental_imaging",
+  "ophthalmic_imaging",
+  "dermatology_photo",
+  "pathology_slide",
+]);
+
+const PROCEDURE_LAB = new Set<ProcedureClass>(["lab_panel", "lab_single_report"]);
+
+const PROCEDURE_WAVEFORM = new Set<ProcedureClass>(["ecg", "eeg", "emg"]);
+
+const PROCEDURE_DOCUMENT = new Set<ProcedureClass>([
+  "radiology_report_document",
+  "pathology_report_document",
+  "clinical_note_document",
+  "medication_document",
+  "operative_note_document",
+  "generic_medical_document",
+]);
+
+export function inferReportFamilyForProcedureClass(
+  pc: ProcedureClass
+): ReportFamily {
+  if (PROCEDURE_IMAGING.has(pc)) return "imaging";
+  if (PROCEDURE_LAB.has(pc)) return "laboratory";
+  if (PROCEDURE_WAVEFORM.has(pc)) return "waveform";
+  if (PROCEDURE_DOCUMENT.has(pc)) return "document";
+  return "mixed_context";
+}
+
+export function inferRoutingTargetFromProcedureAndFamily(
+  pc: ProcedureClass,
+  reportFamily: ReportFamily
+): RoutingTarget {
+  if (PROCEDURE_IMAGING.has(pc)) return "imaging_extractor";
+  if (PROCEDURE_LAB.has(pc)) return "lab_extractor";
+  if (PROCEDURE_WAVEFORM.has(pc)) return "waveform_extractor";
+  if (PROCEDURE_DOCUMENT.has(pc)) return "document_extractor";
+  if (pc === "unknown") {
+    switch (reportFamily) {
+      case "laboratory":
+        return "lab_extractor";
+      case "waveform":
+        return "waveform_extractor";
+      case "document":
+        return "document_extractor";
+      case "imaging":
+        return "imaging_extractor";
+      default:
+        return "imaging_extractor";
+    }
+  }
+  return "imaging_extractor";
+}
+
 const LATERALITY_SET = new Set<string>([
   "left",
   "right",
@@ -153,89 +245,80 @@ function clamp01(n: number): number {
 
 export const MAPPER_SYSTEM_EN = `You are the RapiMed Procedure, Modality, and Anatomy Mapper.
 
-You inspect exactly ONE coherent file or ONE coherent group.
+Your job is to map one coherent or provisionally coherent medical group into:
+- procedure_class
+- report_family
+- anatomy hierarchy
+- routing suitability (routing_decision)
+
 You do not diagnose.
-You do not create findings.
-You only classify procedure, modality class, anatomy, location specificity, and study purpose.
+You do not reject a clearly medical rendered-image group only because metadata is sparse.
+You do not let filenames outweigh medical-image coherence.
 
-INPUTS:
-- group_id
-- group_type
-- family
-- all file-level metadata for the group
-- OCR text
-- DICOM tags if present
-- prior intake signals
-- number_of_files
-- number_of_pages
-- number_of_images
-- page thumbnails or quick visual summaries
-- source provenance quality indicators
+INPUTS (INPUTS_JSON):
+- group_id, group_type, family
+- all_file_level_metadata, prior_intake_signals
+- ocr_text, dicom_tags_if_present, page_thumbnail_summaries (often null)
+- number_of_files, number_of_pages, number_of_images
+- source_provenance_quality (may include cohesion_action, group_confidence, provisional_group)
 
-PRIMARY OUTPUTS:
-1. procedure_class
-2. raw_modality_codes if present
-3. anatomy hierarchy
-4. laterality (inside anatomy object)
-5. sub-location precision (location_precision)
-6. study purpose and content subtype
-7. routing target for the next extractor
+PRIMARY GOAL:
+Map plausible rendered medical groups provisionally instead of rejecting them when the absence of metadata is the main weakness.
+
+NON-NEGOTIABLE RULES:
+1. Missing DICOM tags is NOT enough to reject procedure mapping.
+2. Missing OCR text is NOT enough to reject procedure mapping.
+3. Missing page thumbnail summaries is NOT enough to reject procedure mapping.
+4. Missing patient identifiers is NOT enough to reject procedure mapping.
+5. Missing study identifiers is NOT enough to reject procedure mapping.
+6. Low-confidence intake metadata is NOT enough to reject procedure mapping if the group is still plausibly medical and coherent.
+7. Conflicting or uninformative filenames are weak evidence and must not outweigh strong medical-image coherence.
+8. If the group is provisionally coherent and visually consistent with rendered radiology, prefer provisional procedure mapping over reject.
+9. Use the strongest available signals first: prior intake signals, group type, family, file-level metadata, upload cohesion.
+10. Keep anatomy broad rather than wrong.
+11. If fine-grained modality cannot be determined safely, map to the nearest reliable procedure class rather than rejecting a clearly medical group.
+12. Only reject when the content cannot be mapped to any reliable medical procedure family at all.
 
 PROCEDURE_CLASS ENUM:
-- projection_radiography
-- ct
-- mri
-- ultrasound
-- pet_or_nuclear
-- fluoroscopy_or_angiography
-- mammography
-- dental_imaging
-- ophthalmic_imaging
-- dermatology_photo
-- pathology_slide
-- ecg
-- eeg
-- emg
-- lab_panel
-- lab_single_report
-- radiology_report_document
-- pathology_report_document
-- clinical_note_document
-- medication_document
-- operative_note_document
-- generic_medical_document
-- unknown
+projection_radiography | ct | mri | ultrasound | pet_or_nuclear | fluoroscopy_or_angiography | mammography | dental_imaging | ophthalmic_imaging | dermatology_photo | pathology_slide | ecg | eeg | emg | lab_panel | lab_single_report | radiology_report_document | pathology_report_document | clinical_note_document | medication_document | operative_note_document | generic_medical_document | unknown
 
-ANATOMY HIERARCHY FORMAT:
-{
-  "body_region": "string",
-  "organ_system": "string",
-  "primary_structure": "string",
-  "substructures": ["string"],
-  "laterality": "left | right | bilateral | midline | none | unknown",
-  "level_or_segment": "string or null",
-  "location_precision": "broad | moderate | high | exact"
-}
+REPORT_FAMILY ENUM:
+imaging | laboratory | waveform | document | mixed_context
 
-RULES:
-1. DICOM metadata outranks OCR and visual guess.
-2. Clear report titles outrank weak visual impressions.
-3. If anatomy is uncertain, keep it broad rather than wrong.
-4. Use specific anatomy when directly supported.
-5. Do not assign a disease to infer anatomy.
-6. If the content is a lab report, anatomy may be "systemic" or specimen-specific rather than organ-specific.
-7. If the content is a generic medical document, do not force anatomy.
-8. If a radiology image includes multiple visible regions, select the intended primary target if supported; otherwise use the broader region.
-9. Keep raw modality codes separate from internal procedure_class.
-10. Never force unknown into CT/MR/X-ray without strong evidence.
+ANATOMY RULES:
+1. Use broad anatomy when certainty is limited.
+2. Do not infer disease to infer anatomy.
+3. Do not force exact laterality or exact substructure unless directly supported.
+4. If the group appears to be chest radiography or likely chest radiography, broad chest / respiratory / lungs mapping is preferred over reject.
+5. If the content is medical but exact procedure class is uncertain, choose a broader still-medical class instead of reject when safe.
 
-RETURN EXACTLY THIS JSON:
+REJECTION RULES:
+Reject (routing_decision="reject") only when one or more of these are true:
+- content is not clearly medical
+- group is strongly contradictory
+- procedure family cannot be medically mapped even broadly
+- the available signals are too weak to distinguish between medical and non-medical content
+
+DO NOT reject for these reasons alone:
+- no DICOM
+- no OCR
+- null page summaries
+- weak filenames
+- low-confidence intake metadata
+- missing patient/date/study IDs
+
+PROVISIONAL MAPPING RULE:
+If the group is likely a rendered radiology subset, map provisionally to the nearest safe imaging procedure class and broad anatomy, then let later stages keep findings narrow. Set provisional_mapping true and routing_decision accept_provisional when appropriate.
+
+Signal priority when present: DICOM and clear report headers outrank weak visual guess; keep raw modality codes in raw_modality_codes separate from procedure_class.
+
+RETURN JSON ONLY — exactly this shape (no markdown fences, no prose outside JSON):
 {
   "group_id": "string",
-  "procedure_class": "enum",
+  "procedure_class": "projection_radiography | ct | mri | ultrasound | pet_or_nuclear | fluoroscopy_or_angiography | mammography | dental_imaging | ophthalmic_imaging | dermatology_photo | pathology_slide | ecg | eeg | emg | lab_panel | lab_single_report | radiology_report_document | pathology_report_document | clinical_note_document | medication_document | operative_note_document | generic_medical_document | unknown",
   "raw_modality_codes": ["string"],
   "study_purpose": "diagnostic | screening | follow_up | pre_op | post_op | unknown",
-  "content_subtype": "string",
+  "report_family": "imaging | laboratory | waveform | document | mixed_context",
   "anatomy": {
     "body_region": "string",
     "organ_system": "string",
@@ -245,39 +328,39 @@ RETURN EXACTLY THIS JSON:
     "level_or_segment": null,
     "location_precision": "broad | moderate | high | exact"
   },
-  "routing_target": "imaging_extractor | lab_extractor | waveform_extractor | document_extractor | reject",
-  "confidence_breakdown": {
-    "metadata_support": 0.0,
-    "ocr_support": 0.0,
-    "visual_support": 0.0,
-    "cross_file_support": 0.0,
-    "overall": 0.0
-  },
-  "mapping_rationale": [
-    "string"
-  ],
-  "mapping_conflicts": [
-    "string"
-  ]
+  "mapping_confidence": 0.0,
+  "provisional_mapping": false,
+  "mapping_rationale": ["string"],
+  "mapping_conflicts": ["string"],
+  "routing_decision": "accept | accept_provisional | reject"
 }
 
-FAIL SAFE:
-If routing is not reliable, set routing_target="reject" and explain why in mapping_conflicts.`;
+FAIL-SAFE:
+If the group is clearly medical but exact mapping is weak, choose accept_provisional with broad anatomy and the nearest safe procedure class; set provisional_mapping true.
+Use reject only when no reliable medical mapping is possible at all.`;
 
 export const MAPPER_SYSTEM_TR = `Sen RapiMed Prosedür, Modalite ve Anatomi Eşleyicisisin.
 
-Tam olarak TEK tutarlı dosya veya TEK tutarlı grubu incelersin.
-Tanı koymazsın.
-Bulgu üretmezsin.
-Yalnızca prosedür, modalite sınıfı, anatomi, konum özgüllüğü ve çalışma amacını sınıflandırırsın.
+Görevin: tek tutarlı veya provizyonel tutarlı tıbbi grubu procedure_class, report_family, anatomi hiyerarşisi ve routing_decision ile eşlemek.
 
-Girdiler: group_id, group_type, family, dosya meta verileri, OCR, DICOM (varsa), intake sinyalleri, sayılar, küçük görsel özetler, provenance kalitesi.
+Tanı koymazsın. Seyrek meta veri yüzünden açıkça tıbbi render görüntü grubunu reddetme. Dosya adları tıbbi-görsel tutarlılığı yenemez.
 
-procedure_class ve routing_target İngilizce enum değerleriyle JSON döndür.
-routing_target: imaging_extractor | lab_extractor | waveform_extractor | document_extractor | reject
-Güvenilir değilse reject ve mapping_conflicts içinde gerekçe.
+PRIMARY GOAL: Ana zayıflık meta veri eksikliğiyse provizyonel eşleme; gereksiz reject yok.
 
-Kurallar (özet): DICOM > OCR > zayıf görsel; belirsiz anatomide geniş tut; hastalıktan anatomi çıkarma; lab için systemic/specimen; generic belgede anatomiyi zorlama; raw modality kodlarını ayrı tut; CT/MR/X-ray için güçlü kanıt olmadan zorlama.`;
+İHMAL EDİLEMEZ (1–12, EN ile aynı): DICOM/OCR/sayfa özeti/hasta-çalışma kimliği/tarih veya düşük güvenli intake tek başına reject değil; provizyonel tutarlı + render radyoloji uyumu → provizyonel eşleme; önce intake, grup tipi, aile, dosya meta, cohesion; anatomi yanlış daraltma yerine geniş; güvenli modalite belirsizse en yakın güvenli prosedür sınıfı; yalnızca hiç güvenilir tıbbi prosedür ailesine eşlenemiyorsa reject.
+
+report_family: imaging | laboratory | waveform | document | mixed_context
+routing_decision: accept | accept_provisional | reject
+
+ANATOMİ: belirsizlikte geniş; hastalıktan anatomi çıkarma; lateralite/alt yapı zorlama yok; olası göğüs grafisi → geniş göğüs/solunum/akciğer tercih, reject değil.
+
+REDDETME: tıbbi değil; güçlü çelişki; geniş bile olsa prosedür ailesi eşlenemiyor; tıbbi/tıbbi olmayan ayrımı için sinyal çok zayıf. DICOM/OCR/null özet/zayıf dosya adı/düşük güven eksik kimlik tek başına reject değil.
+
+PROVİZYONEL: olası render radyoloji alt kümesi → en yakın güvenli görüntüleme procedure_class + geniş anatomi; provisional_mapping true, routing_decision accept_provisional uygunsa.
+
+ÇIKTI: Yalnızca geçerli JSON; EN şeması ile birebir anahtarlar (İngilizce enumlar).
+
+FAIL-SAFE: açıkça tıbbi ama zayıf kesinlik → accept_provisional, geniş anatomi, en yakın güvenli sınıf; reject yalnızca güvenilir tıbbi eşleme hiç mümkün değilse.`;
 
 export function buildProcedureMapperPrompt(
   language: "tr" | "en",
@@ -323,6 +406,31 @@ function parseConfidence(raw: unknown): ConfidenceBreakdown {
   };
 }
 
+function parseReportFamily(v: unknown): ReportFamily | null {
+  const s = String(v ?? "");
+  return REPORT_FAMILY_SET.has(s) ? (s as ReportFamily) : null;
+}
+
+function parseRoutingDecision(v: unknown): MapperRoutingDecision | null {
+  const s = String(v ?? "");
+  return ROUTING_DECISION_SET.has(s) ? (s as MapperRoutingDecision) : null;
+}
+
+function synthesizeConfidenceBreakdown(overall: number, legacy: unknown): ConfidenceBreakdown {
+  const base = legacy ? parseConfidence(legacy) : null;
+  const o = clamp01(overall);
+  if (base) {
+    return { ...base, overall: o };
+  }
+  return {
+    metadata_support: 0,
+    ocr_support: 0,
+    visual_support: o,
+    cross_file_support: 0,
+    overall: o,
+  };
+}
+
 export function parseProcedureMapperResult(
   raw: unknown,
   fallbackGroupId: string
@@ -331,28 +439,82 @@ export function parseProcedureMapperResult(
   const o = raw as Record<string, unknown>;
   const pc = String(o.procedure_class ?? "");
   if (!PROCEDURE_SET.has(pc)) return null;
+  const procedureClass = pc as ProcedureClass;
   const sp = String(o.study_purpose ?? "unknown");
   const studyPurpose = STUDY_PURPOSE_SET.has(sp) ? (sp as StudyPurpose) : "unknown";
-  const rt = String(o.routing_target ?? "");
-  if (!ROUTING_SET.has(rt)) return null;
+
+  let reportFamily = parseReportFamily(o.report_family);
+  if (!reportFamily) {
+    reportFamily = inferReportFamilyForProcedureClass(procedureClass);
+  }
+
+  const legacyRt = String(o.routing_target ?? "");
+  const explicitDecision = parseRoutingDecision(o.routing_decision);
+
+  let routingDecision: MapperRoutingDecision;
+  let routingTarget: RoutingTarget;
+
+  if (explicitDecision != null) {
+    routingDecision = explicitDecision;
+    routingTarget =
+      routingDecision === "reject"
+        ? "reject"
+        : inferRoutingTargetFromProcedureAndFamily(procedureClass, reportFamily);
+  } else if (ROUTING_SET.has(legacyRt)) {
+    routingTarget = legacyRt as RoutingTarget;
+    routingDecision = legacyRt === "reject" ? "reject" : "accept";
+  } else {
+    routingDecision = "accept_provisional";
+    routingTarget = inferRoutingTargetFromProcedureAndFamily(procedureClass, reportFamily);
+  }
+
+  let mappingConfidence: number;
+  if (
+    typeof o.mapping_confidence === "number" ||
+    (typeof o.mapping_confidence === "string" && String(o.mapping_confidence).trim() !== "")
+  ) {
+    mappingConfidence = clamp01(Number(o.mapping_confidence));
+    if (Number.isNaN(mappingConfidence)) mappingConfidence = 0.45;
+  } else if (o.confidence_breakdown && typeof o.confidence_breakdown === "object") {
+    mappingConfidence = clamp01(parseConfidence(o.confidence_breakdown).overall);
+    if (Number.isNaN(mappingConfidence)) mappingConfidence = 0.45;
+  } else {
+    mappingConfidence = 0.45;
+  }
+
+  const provisionalMapping =
+    typeof o.provisional_mapping === "boolean"
+      ? o.provisional_mapping
+      : routingDecision === "accept_provisional";
+
+  const contentSubtype =
+    String(o.content_subtype ?? "").trim() ||
+    (procedureClass === "unknown" ? "unmapped" : procedureClass);
 
   return {
     group_id: String(o.group_id ?? fallbackGroupId),
-    procedure_class: pc as ProcedureClass,
+    procedure_class: procedureClass,
     raw_modality_codes: Array.isArray(o.raw_modality_codes)
       ? o.raw_modality_codes.map(String)
       : [],
     study_purpose: studyPurpose,
-    content_subtype: String(o.content_subtype ?? ""),
+    report_family: reportFamily,
     anatomy: parseAnatomy(o.anatomy),
-    routing_target: rt as RoutingTarget,
-    confidence_breakdown: parseConfidence(o.confidence_breakdown),
+    mapping_confidence: mappingConfidence,
+    provisional_mapping: provisionalMapping,
     mapping_rationale: Array.isArray(o.mapping_rationale)
       ? o.mapping_rationale.map(String)
       : [],
     mapping_conflicts: Array.isArray(o.mapping_conflicts)
       ? o.mapping_conflicts.map(String)
       : [],
+    routing_decision: routingDecision,
+    routing_target: routingTarget,
+    content_subtype: contentSubtype,
+    confidence_breakdown: synthesizeConfidenceBreakdown(
+      mappingConfidence,
+      o.confidence_breakdown
+    ),
   };
 }
 
@@ -363,12 +525,14 @@ export function defaultProcedureMapperResult(
   const families = [...new Set(perImageIntake.map((p) => p.intake_family ?? p.upload_type))].join(
     ", "
   );
+  const reportFamily: ReportFamily = "imaging";
+  const mappingConfidence = 0.25;
   return {
     group_id: groupId,
     procedure_class: "unknown",
     raw_modality_codes: [],
     study_purpose: "unknown",
-    content_subtype: "unmapped",
+    report_family: reportFamily,
     anatomy: {
       body_region: "",
       organ_system: "",
@@ -378,16 +542,14 @@ export function defaultProcedureMapperResult(
       level_or_segment: null,
       location_precision: "broad",
     },
-    routing_target: "imaging_extractor",
-    confidence_breakdown: {
-      metadata_support: 0,
-      ocr_support: 0,
-      visual_support: 0,
-      cross_file_support: 0,
-      overall: 0.25,
-    },
+    mapping_confidence: mappingConfidence,
+    provisional_mapping: true,
     mapping_rationale: ["mapper_unavailable_or_parse_failed", `families:${families}`],
     mapping_conflicts: [],
+    routing_decision: "accept_provisional",
+    routing_target: inferRoutingTargetFromProcedureAndFamily("unknown", reportFamily),
+    content_subtype: "unmapped",
+    confidence_breakdown: synthesizeConfidenceBreakdown(mappingConfidence, null),
   };
 }
 
@@ -488,6 +650,7 @@ export function buildProcedureMapperInputFromPipeline(params: {
     source_provenance_quality: {
       cohesion_action: cohesion?.process_action ?? "unknown",
       group_confidence: primary?.group_confidence ?? null,
+      provisional_group: primary?.provisional_group ?? false,
     },
   };
 }

@@ -7,6 +7,7 @@ import {
   computeKeepIndicesForCohesion,
   fileIdForUploadIndex,
 } from "./uploadCohesionArbiter";
+import { isWeakMetadataAloneReason } from "./technicalOutcomeRenderer";
 
 export type UploadOutcomeStatus =
   | "analysis_started"
@@ -29,6 +30,23 @@ export interface UploadOutcomeMessage {
 
 function coherentGroupsCount(cohesion: UploadCohesionResult): number {
   return cohesion.groups.filter((g) => g.group_type !== "excluded_group").length;
+}
+
+function cohesionOverallReasonForProceedingBody(
+  cohesion: UploadCohesionResult,
+  tr: boolean
+): string | null {
+  const raw = cohesion.overall_reason?.trim();
+  if (!raw) return null;
+  const provisionalish =
+    cohesion.process_action === "continue_provisional" ||
+    cohesion.process_action === "continue_with_quarantine";
+  if (provisionalish && isWeakMetadataAloneReason(raw)) {
+    return tr
+      ? "Üst veri veya bağlantı sınırlı olabilir; analiz provizyonel/kısıtlı tutarlı küme üzerinden sürdürülüyor."
+      : "Metadata or linkage may be limited; analysis continues on a provisional or partially coherent subset.";
+  }
+  return raw;
 }
 
 /**
@@ -148,9 +166,8 @@ export function buildUploadOutcomeMessage(params: {
         `${excluded.length} dosya bu analize dahil edilmedi; ayrıntılar listede.`
       );
     }
-    if (cohesion.overall_reason?.trim()) {
-      bodyLines.push(cohesion.overall_reason.trim());
-    }
+    const reasonLine = cohesionOverallReasonForProceedingBody(cohesion, true);
+    if (reasonLine) bodyLines.push(reasonLine);
     if (clarification_needed && clarification_questions.length > 0) {
       bodyLines.push("Ek netleştirme gerekebilir; sorular aşağıda.");
     }
@@ -164,9 +181,8 @@ export function buildUploadOutcomeMessage(params: {
         `${excluded.length} file(s) were not included in this analysis; see excluded_files.`
       );
     }
-    if (cohesion.overall_reason?.trim()) {
-      bodyLines.push(cohesion.overall_reason.trim());
-    }
+    const reasonLine = cohesionOverallReasonForProceedingBody(cohesion, false);
+    if (reasonLine) bodyLines.push(reasonLine);
     if (clarification_needed && clarification_questions.length > 0) {
       bodyLines.push("Additional clarification may be needed; see questions below.");
     }

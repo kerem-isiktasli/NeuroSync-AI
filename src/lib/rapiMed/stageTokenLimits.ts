@@ -12,6 +12,8 @@ export const RAPIMED_MAX_OUTPUT_TOKENS = {
   evidence_adjudicator: 8192,
   procedure_capability_policy: 4096,
   final_report_renderer: 8192,
+  final_report_validator: 4096,
+  constrained_report_repairer: 8192,
 } as const;
 
 export type RapiMedStageTokenKey = keyof typeof RAPIMED_MAX_OUTPUT_TOKENS;

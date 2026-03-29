@@ -8,8 +8,11 @@ import {
   RAPIMED_PIPELINE_COMPONENT_RULES_TR,
 } from "./rapiMedPipelineDiscipline";
 import type {
+  IntakeDiagnosticUtilityStatus,
   IntakeDiagnosticValue,
   IntakeImagePlane,
+  IntakeLinkabilityStatus,
+  IntakeReadabilityStatus,
   PerImageIntakeResult,
   UploadType,
 } from "./intakePrompts";
@@ -38,11 +41,11 @@ export type IntakeFamily = (typeof INTAKE_FAMILY_VALUES)[number];
 
 const FAMILY_SET = new Set<string>(INTAKE_FAMILY_VALUES);
 
-export type IntakeReadabilityStatus = "readable" | "partially_readable" | "unreadable";
-
-export type IntakeLinkabilityStatus = "strong" | "moderate" | "weak" | "unknown";
-
-export type IntakeDiagnosticUtilityStatus = "high" | "moderate" | "low" | "unknown";
+export type {
+  IntakeDiagnosticUtilityStatus,
+  IntakeLinkabilityStatus,
+  IntakeReadabilityStatus,
+} from "./intakePrompts";
 
 export interface SingleFileIntakeContext {
   file_id: string;
@@ -489,5 +492,8 @@ export function singleFileIntakeToPerImageResult(
     intake_is_medical: parsed.is_medical,
     quarantine_suggested: parsed.quarantine_suggested,
     quarantine_reason: parsed.quarantine_reason,
+    readability_status: parsed.readability_status,
+    linkability_status: parsed.linkability_status,
+    diagnostic_utility_status: parsed.diagnostic_utility_status,
   };
 }
